@@ -349,7 +349,7 @@ int main(int argc, char** argv)
     service = CreateServiceA(
         scm,
         SERVICE_NAME_A,
-        "nmi-immunity NMI experiment",
+        "nmi-immunity",
         SERVICE_START | SERVICE_STOP | DELETE,
         SERVICE_KERNEL_DRIVER,
         SERVICE_DEMAND_START,
@@ -374,7 +374,7 @@ int main(int argc, char** argv)
         service = CreateServiceA(
             scm,
             SERVICE_NAME_A,
-            "nmi-immunity NMI experiment",
+            "nmi-immunity",
             SERVICE_START | SERVICE_STOP | DELETE,
             SERVICE_KERNEL_DRIVER,
             SERVICE_DEMAND_START,

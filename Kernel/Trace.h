@@ -11,7 +11,7 @@ Module Name:
 Abstract:
 
     This module declares a bounded recorder for numeric observations made
-    while the experiment owns processor state. Recording and printing are
+    while the nmi-immunity owns processor state. Recording and printing are
     separate operations: a producer writes resident memory; the owner
     prints the buffer only after every producer has stopped.
 
@@ -27,7 +27,7 @@ Abstract:
 --*/
 
 //
-// Capture the beginning of an experiment without allocating in a handler.
+// Capture the beginning of an nmi-immunity without allocating in a handler.
 // Resetting or dumping requires producer quiescence. An indefinite worker
 // will eventually exhaust this buffer; exhaustion affects diagnostics only.
 //
@@ -61,7 +61,7 @@ Enumeration Description:
         self-NMI delivery latency (ICR completion to CPU acceptance),
         which makes the loss load-bearing rather than rare. NMIs carry
         no source identifier, so no observation inside the handler can
-        distinguish that case. Experiments that require exact
+        distinguish that case. Nmi-immunity deployments that require exact
         foreign-NMI accounting cannot use this scheme without a
         disarmed dwell W per cycle (see Apic.h): P = 1 - L/T.
 

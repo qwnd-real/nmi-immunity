@@ -20,7 +20,7 @@ Abstract:
     sends an interrupt. Its result does not certify the return protocol,
     and it does not certify that the VSL/HyperV branch inside the routine
     is not taken: that branch is a runtime property of the machine, and
-    the experiment assumes it is never taken.
+    the nmi-immunity assumes it is never taken.
 
 --*/
 

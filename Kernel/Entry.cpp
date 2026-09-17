@@ -29,7 +29,7 @@ Abstract:
 
     Load is refused when discovery, the sweep, the mailbox handshake
     or startup fails: unlike the reference project, there is no
-    diagnosable degraded mode here, only a running experiment or an
+    diagnosable degraded mode here, only a running nmi-immunity or an
     unloaded driver. The mailbox in particular is mandatory -- a boot
     without a consumer would leave user mode polling forever, so a
     missing rendezvous fails the load rather than booting deaf.
@@ -119,7 +119,7 @@ Arguments:
 
 Return Value:
 
-    STATUS_SUCCESS with the experiment cycling, or a failure status
+    STATUS_SUCCESS with the nmi-immunity cycling, or a failure status
     with nothing running.
 
 --*/

@@ -79,7 +79,7 @@ Routine Description:
     The IDT starts as 256 fatal gates, then vector 2 (NMI), vector 13
     (#GP, the expected LTR fault) and vector 18 (#MC, still possible at
     HIGH_LEVEL) get their real stubs. Everything else bugchecks: an
-    unexpected vector under the custom IDT means the experiment, not
+    unexpected vector under the custom IDT means the nmi-immunity, not
     Windows, is at fault.
 
     The block reuses the native GDTR verbatim, points the IDTR at the
@@ -260,7 +260,7 @@ TablesUninitialize(
 Routine Description:
 
     Frees the IDT and the block. Safe to call after a failed
-    TablesInitialize. Must run at PASSIVE_LEVEL with the experiment
+    TablesInitialize. Must run at PASSIVE_LEVEL with the nmi-immunity
     stopped: the custom IDT may be referenced by nothing at this point,
     which the worker guarantees by restoring the native IDT before it
     exits its last cycle.

@@ -11,7 +11,7 @@ Module Name:
 
 Abstract:
 
-    This module declares the pinned experiment thread. The worker pins
+    This module declares the pinned nmi-immunity thread. The worker pins
     the loading thread to the target CPU, captures that CPU's native
     descriptor state, points the assembly protocol at it and then
     creates one system thread born inside KiRestoreProcessorControlState

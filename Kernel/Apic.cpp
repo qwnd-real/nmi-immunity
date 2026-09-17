@@ -136,7 +136,7 @@ ApicUninitialize(
 Routine Description:
 
     Unmaps the xAPIC window when one was mapped. Safe to call after a
-    failed ApicInitialize. Must run at PASSIVE_LEVEL with no experiment
+    failed ApicInitialize. Must run at PASSIVE_LEVEL with no nmi-immunity
     in flight: the assembly window dereferences the mapping.
 
 Arguments:

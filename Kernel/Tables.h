@@ -10,7 +10,7 @@ Module Name:
 
 Abstract:
 
-    This module declares the descriptor state for the experiment.
+    This module declares the descriptor state for the nmi-immunity.
 
     Design decision, per review: the private GDT is gone. The crafted
     register block reuses the native GDTR verbatim, so LGDT reloads the
@@ -53,7 +53,7 @@ Abstract:
 // That coincidence is what makes the gadget's `mov cr8, rax` legal --
 // CR8 implements bits 3:0 only, so any value with bits 63:4 set would
 // raise #GP instead. (On x86 HIGH_LEVEL is 31 and this block would not
-// transfer as-is; the experiment is x64-only.)
+// transfer as-is; the nmi-immunity is x64-only.)
 //
 
 //

@@ -18,8 +18,8 @@ Abstract:
     Implements Worker.h. All of it runs on the loading thread: it pins
     itself to the target CPU, detects the APIC mode, captures that CPU's
     native descriptor state, publishes everything to the assembly
-    protocol and then creates the experiment thread born inside the
-    gadget. The experiment thread itself never runs a byte of this file.
+    protocol and then creates the nmi-immunity thread born inside the
+    gadget. The nmi-immunity thread itself never runs a byte of this file.
 
 --*/
 
