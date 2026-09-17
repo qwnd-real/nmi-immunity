@@ -37,6 +37,12 @@
     <ClCompile Include="Restore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SharedMemoryHandler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Sweep.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Tables.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -72,6 +78,15 @@
     <ClInclude Include="Restore.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="SharedMemoryHandler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Sweep.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\Communication.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Tables.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -83,7 +98,7 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="nmi-abuse.inf">
+    <Inf Include="nmi-immunity.inf">
       <Filter>Driver Files</Filter>
     </Inf>
   </ItemGroup>

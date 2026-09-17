@@ -1,0 +1,9 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="Kernel/Kernel.vcxproj" Id="89e6c256-6b44-4b89-e429-f448b8bb1bb4">
+    <Deploy />
+  </Project>
+  <Project Path="User/User.vcxproj" Id="b7c2d9e4-1a5f-4b8c-9d3e-6f0a2b5c8d1e" />
+</Solution>

@@ -23,8 +23,6 @@ Abstract:
 
 --*/
 
-#if defined(_AMD64_)
-
 //
 // Lifetime state. All of it is static non-paged storage: the assembly
 // paths dereference the buffer and the stop flag while the custom IDT
@@ -188,7 +186,7 @@ WorkerStart(
 
 Routine Description:
 
-    Starts the experiment: pins the current thread to the target CPU,
+    Starts nmi-immunity: pins the current thread to the target CPU,
     detects the APIC mode, captures that CPU's native descriptor state,
     publishes everything to the assembly protocol and creates the system
     thread born inside the gadget.
@@ -433,7 +431,7 @@ WorkerStop(
 
 Routine Description:
 
-    Stops the experiment and releases everything. The flag is observed
+    Stops nmi-immunity and releases everything. The flag is observed
     on the current cycle: inside the APIC_WRITE batch granularity, or
     at the next NMI teardown. The thread restores the natives and
     terminates itself, so the wait below is one cycle long at most.
@@ -520,30 +518,3 @@ Return Value:
 }
 
 #pragma code_seg(pop)
-
-#else
-
-//
-// Non x64 stub. The cycle protocol is x64 assembly.
-//
-
-_Use_decl_annotations_
-NTSTATUS
-WorkerStart(
-    const RESTORE_TARGET* Target
-)
-{
-    UNREFERENCED_PARAMETER(Target);
-
-    return STATUS_NOT_SUPPORTED;
-}
-
-_Use_decl_annotations_
-VOID
-WorkerStop(
-    VOID
-)
-{
-}
-
-#endif

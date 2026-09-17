@@ -35,8 +35,6 @@ Abstract:
 
 --*/
 
-#if defined(_AMD64_)
-
 //
 // PTE bit contract. Only the frame changes per access; every flag is
 // inherited from the captured original with the four bits below forced
@@ -65,6 +63,8 @@ Abstract:
 #define PHYSICAL_PML4_KERNEL_HALF_MIN   0x100
 #define PHYSICAL_CR4_LA57               0x1000ULL
 #define PHYSICAL_VA_SIGN_EXTENSION      0xFFFF000000000000ULL
+
+#define PHYSICAL_POOL_TAG               'lPhN'
 
 //
 // Lifetime state. Static non-paged storage: the hot paths dereference
@@ -151,18 +151,24 @@ PhysicalDiscoverPteBase(
 Routine Description:
 
     Locates the kernel's self-referencing PML4 entry and derives the
-    PTE array base for this boot. The live PML4 is read through a
-    temporary cached mapping of the CR3 frame; the single present entry
-    whose frame is the PML4 frame itself is the self-reference. The
+    PTE array base for this boot. The CR3 frame is read with
+    MmCopyMemory (MM_COPY_MEMORY_PHYSICAL) into a non-paged snapshot;
+    the single present entry whose frame is the PML4 frame itself is
+    the self-reference. MmMapIoSpace (cached, then non-cached) is kept
+    only as a fallback for firmware/I/O-space classification. The
     base is that index shifted to the PML4 position with the canonical
     sign extension, which holds because the kernel keeps the index in
     the upper half.
 
-    Runs once at setup, on the loading thread in kernel context, so the
-    CR3 read observes the kernel address space whose self-reference
-    index applies boot-wide. Reading nt!MmPteBase instead would need an
-    unexported global; the scan is self-contained and fails loudly when
-    the layout is not what this module implements.
+    CR3 is read attached to the System process: DriverEntry runs in
+    the loader's (user) context, and with KVA shadowing a bare
+    __readcr3() observes the shadow/user PML4, whose frame may be
+    unmappable and whose self-reference index is not the kernel's.
+    Attaching makes the read observe the kernel address space whose
+    self-reference index applies boot-wide. Reading nt!MmPteBase
+    instead would need an unexported global; the scan is
+    self-contained and fails loudly when the layout is not what this
+    module implements.
 
 Arguments:
 
@@ -171,15 +177,20 @@ Arguments:
 Return Value:
 
     STATUS_SUCCESS with the base published. Five level paging, a
-    missing mapping, zero matches, more than one match, or an index
-    outside the kernel half all fail load rather than guessing a base.
+    missing read/mapping, zero matches, more than one match, or an
+    index outside the kernel half all fail load rather than guessing
+    a base.
 
 --*/
 {
-    ULONG64 Cr3;
+    ULONG64 RawCr3;
     PHYSICAL_ADDRESS Pml4Physical;
+    PULONG64 Snapshot;
+    MM_COPY_ADDRESS Source;
+    SIZE_T Copied;
+    NTSTATUS CopyStatus;
     PVOID Mapping;
-    volatile ULONG64* Entries;
+    PULONG64 Entries;
     ULONG MatchIndex;
     ULONG MatchCount;
     ULONG Index;
@@ -191,29 +202,118 @@ Return Value:
     }
 
     //
+    // Kernel CR3, not the loader's shadow. KeStackAttachProcess is
+    // legal here (PASSIVE_LEVEL, PAGE section). PsInitialSystemProcess
+    // is valid by the time DriverEntry runs.
+    //
+
+    {
+        KAPC_STATE ApcState;
+        BOOLEAN Attached;
+
+        Attached = FALSE;
+
+        if (PsInitialSystemProcess != NULL)
+        {
+            KeStackAttachProcess(
+                (PRKPROCESS)PsInitialSystemProcess,
+                &ApcState);
+            Attached = TRUE;
+        }
+
+        RawCr3 = (ULONG64)__readcr3();
+
+        if (Attached)
+        {
+            KeUnstackDetachProcess(&ApcState);
+        }
+    }
+
+    //
     // CR3 carries the PML4 frame in bits 51:12; the low twelve are
     // PCID and key bits, not address.
     //
 
-    Cr3 = (ULONG64)__readcr3();
-    Pml4Physical.QuadPart = (LONGLONG)(Cr3 & PHYSICAL_PTE_PFN_MASK);
+    Pml4Physical.QuadPart = (LONGLONG)(RawCr3 & PHYSICAL_PTE_PFN_MASK);
 
     if (Pml4Physical.QuadPart == 0)
     {
-        KmError("Empty CR3\n");
+        KmError("Empty CR3 - RawCr3=0x%I64X\n", RawCr3);
         return STATUS_DATA_ERROR;
     }
 
-    Mapping = MmMapIoSpace(Pml4Physical, PAGE_SIZE, MmCached);
+    //
+    // Non-paged snapshot buffer: MmCopyMemory's target must be
+    // non-paged. 4K from pool, freed before return on every path.
+    //
 
-    if (Mapping == NULL)
+    Snapshot = (PULONG64)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        PAGE_SIZE,
+        PHYSICAL_POOL_TAG);
+
+    if (Snapshot == NULL)
     {
-        KmError("Failed to map the PML4 at 0x%I64X\n",
-            (ULONG64)Pml4Physical.QuadPart);
+        KmError("Failed to allocate the PML4 snapshot\n");
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    Entries = (volatile ULONG64*)Mapping;
+    RtlZeroMemory(Snapshot, PAGE_SIZE);
+
+    Source.PhysicalAddress = Pml4Physical;
+    Copied = 0;
+
+    CopyStatus = MmCopyMemory(
+        Snapshot,
+        Source,
+        PAGE_SIZE,
+        MM_COPY_MEMORY_PHYSICAL,
+        &Copied);
+
+    if (NT_SUCCESS(CopyStatus) && (Copied == PAGE_SIZE))
+    {
+        Entries = Snapshot;
+        Mapping = NULL;
+    }
+    else
+    {
+        //
+        // Copy failed (I/O-space classification or hypervisor
+        // protection): fall back to a temporary mapping. Cached
+        // first (PML4 is WB RAM); non-cached second in case the
+        // MTRR/firmware disagrees. Either mapping is unmapped before
+        // return.
+        //
+
+        KmError("PML4 physical copy failed - RawCr3=0x%I64X "
+            "Pa=0x%I64X Status=%s (0x%08X) Copied=%I64u, trying map\n",
+            RawCr3, (ULONG64)Pml4Physical.QuadPart,
+            KmStatusToString(CopyStatus), CopyStatus,
+            (ULONG64)Copied);
+
+        ExFreePoolWithTag(Snapshot, PHYSICAL_POOL_TAG);
+        Snapshot = NULL;
+
+        Mapping = MmMapIoSpace(Pml4Physical, PAGE_SIZE, MmCached);
+
+        if (Mapping == NULL)
+        {
+            Mapping = MmMapIoSpace(Pml4Physical, PAGE_SIZE, MmNonCached);
+        }
+
+        if (Mapping == NULL)
+        {
+            KmError("Failed to map the PML4 at 0x%I64X "
+                "(RawCr3=0x%I64X CopyStatus=%s (0x%08X) Copied=%I64u)\n",
+                (ULONG64)Pml4Physical.QuadPart, RawCr3,
+                KmStatusToString(CopyStatus), CopyStatus,
+                (ULONG64)Copied);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+
+        Entries = (PULONG64)Mapping;
+    }
+
     MatchIndex = 0;
     MatchCount = 0;
 
@@ -242,7 +342,14 @@ Return Value:
         }
     }
 
-    MmUnmapIoSpace(Mapping, PAGE_SIZE);
+    if (Mapping != NULL)
+    {
+        MmUnmapIoSpace(Mapping, PAGE_SIZE);
+    }
+    else
+    {
+        ExFreePoolWithTag(Snapshot, PHYSICAL_POOL_TAG);
+    }
 
     if (MatchCount != 1)
     {
@@ -628,7 +735,7 @@ _Use_decl_annotations_
 NTSTATUS
 PhysicalWrite(
     ULONG64 PhysicalAddress,
-    PCVOID Buffer,
+    CONST PVOID Buffer,
     SIZE_T Size
 )
 /*++
@@ -798,95 +905,3 @@ Return Value:
 {
     return g_PhysicalReady;
 }
-
-#else
-
-//
-// Non x64 stub. The window relies on the x64 self map and INVLPG, so
-// it is x64 only.
-//
-
-_Use_decl_annotations_
-NTSTATUS
-PhysicalInitialize(
-    VOID
-)
-{
-    return STATUS_NOT_SUPPORTED;
-}
-
-_Use_decl_annotations_
-VOID
-PhysicalUninitialize(
-    VOID
-)
-{
-}
-
-_Use_decl_annotations_
-VOID
-PhysicalSetBacking(
-    ULONG64 PhysicalAddress
-)
-{
-    UNREFERENCED_PARAMETER(PhysicalAddress);
-}
-
-_Use_decl_annotations_
-NTSTATUS
-PhysicalRead(
-    ULONG64 PhysicalAddress,
-    PVOID Buffer,
-    SIZE_T Size
-)
-{
-    UNREFERENCED_PARAMETER(PhysicalAddress);
-    UNREFERENCED_PARAMETER(Buffer);
-    UNREFERENCED_PARAMETER(Size);
-
-    return STATUS_NOT_SUPPORTED;
-}
-
-_Use_decl_annotations_
-NTSTATUS
-PhysicalWrite(
-    ULONG64 PhysicalAddress,
-    PCVOID Buffer,
-    SIZE_T Size
-)
-{
-    UNREFERENCED_PARAMETER(PhysicalAddress);
-    UNREFERENCED_PARAMETER(Buffer);
-    UNREFERENCED_PARAMETER(Size);
-
-    return STATUS_NOT_SUPPORTED;
-}
-
-_Use_decl_annotations_
-PVOID
-PhysicalGetWindow(
-    VOID
-)
-{
-    return NULL;
-}
-
-_Use_decl_annotations_
-ULONG64
-PhysicalGetPtePhysicalAddress(
-    VOID
-)
-{
-    return 0;
-}
-
-_Use_decl_annotations_
-BOOLEAN
-PhysicalIsReady(
-    VOID
-)
-{
-    return FALSE;
-}
-
-#endif

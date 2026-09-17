@@ -16,7 +16,7 @@ Abstract:
     processors, even though this wrapper takes no locks itself.
 
     Trace.cpp provides the separate memory recorder for observations made
-    while descriptor state belongs to the experiment. Its dump routine is
+    while descriptor state belongs to nmi-immunity. Its dump routine is
     the only bridge from those observations back to this text emitter.
 
 --*/
@@ -153,7 +153,7 @@ Return Value:
     (VOID)RtlStringCchPrintfA(
         Prefix,
         RTL_NUMBER_OF(Prefix),
-        "[nmi-abuse] %c %s: ",
+        "[nmi-immunity] %c %s: ",
         Tag,
         FunctionName
     );

@@ -20,8 +20,6 @@ Abstract:
 #pragma code_seg(push)
 #pragma code_seg("PAGE")
 
-#if defined(_AMD64_)
-
 static
 VOID
 TablesWriteGate(
@@ -295,34 +293,3 @@ Return Value:
 }
 
 #pragma code_seg(pop)
-
-#else
-
-//
-// Non x64 stub. Descriptor capture uses SGDT/SIDT/STR/CS and the block
-// feeds an x64-only restore routine.
-//
-
-_Use_decl_annotations_
-NTSTATUS
-TablesInitialize(
-    PTABLES_STATE State,
-    const PROCESSOR_NUMBER* Processor
-)
-{
-    UNREFERENCED_PARAMETER(Processor);
-
-    RtlZeroMemory(State, sizeof(*State));
-    return STATUS_NOT_SUPPORTED;
-}
-
-_Use_decl_annotations_
-VOID
-TablesUninitialize(
-    PTABLES_STATE State
-)
-{
-    UNREFERENCED_PARAMETER(State);
-}
-
-#endif

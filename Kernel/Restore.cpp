@@ -18,12 +18,10 @@ Abstract:
     once; a second match is a setup failure rather than a guessed target.
 
     The runtime branch around LGDT, LIDT and LTR is assumed never taken,
-    as required by the experiment. A byte match cannot inspect that
+    as required by nmi-immunity. A byte match cannot inspect that
     condition: the flags live in data this module never reads.
 
 --*/
-
-#if defined(_AMD64_)
 
 //
 // Exact signature supplied with the project:
@@ -42,12 +40,8 @@ static const UCHAR RestoreSignature[] =
     0x8B, 0x41, 0x10, 0x0F, 0x22, 0xD8
 };
 
-#endif
-
 #pragma code_seg(push)
 #pragma code_seg("PAGE")
-
-#if defined(_AMD64_)
 
 _Use_decl_annotations_
 NTSTATUS
@@ -126,37 +120,5 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
-
-#else
-
-_Use_decl_annotations_
-NTSTATUS
-RestoreResolveTarget(
-    PRESTORE_TARGET Target
-)
-/*++
-
-Routine Description:
-
-    Non x64 stub. The experiment is x64 only.
-
-Arguments:
-
-    Target - Receives a zeroed structure.
-
-Return Value:
-
-    STATUS_NOT_SUPPORTED, always.
-
---*/
-{
-    UNREFERENCED_PARAMETER(Target);
-
-    RtlZeroMemory(Target, sizeof(*Target));
-
-    return STATUS_NOT_SUPPORTED;
-}
-
-#endif
 
 #pragma code_seg(pop)

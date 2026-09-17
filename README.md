@@ -1,4 +1,4 @@
-# nmi-abuse
+# nmi-immunity
 
 [![status: research driver](https://img.shields.io/badge/status-research%20driver-red)](#disclaimer)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](#license)
@@ -7,7 +7,7 @@
 [![language: C++ and MASM](https://img.shields.io/badge/language-C%2B%2B%20%2B%20MASM-orange)](#repository-layout)
 [![interface: none](https://img.shields.io/badge/interface-none%20%28primitive%20service%29-informational)](#building)
 
-**nmi-abuse** is a kernel research driver that builds a code section in
+**nmi-immunity** is a kernel research driver that builds a code section in
 which no NMI can observably interrupt the experiment, while every genuine
 NMI still reaches Windows afterwards — fired in Windows context once the
 section is done. It does this with a thread whose instruction pointer,
@@ -439,21 +439,21 @@ Two output channels, strictly separated by execution context:
 | `Tables.h` / `Tables.cpp` | native capture, custom IDT, RCX block |
 | `Trace.h` / `Trace.cpp` | bounded event recorder + asm forwarder |
 | `Worker.h` / `Worker.cpp` | pin, setup, direct birth, proof, stop |
-| `nmi-abuse.inf` | primitive service INF (no devices) |
-| `nmi-abuse.vcxproj` / `.filters` / `.user` | build |
+| `nmi-immunity.inf` | primitive service INF (no devices) |
+| `nmi-immunity.vcxproj` / `.filters` / `.user` | build |
 
 ## Building
 
 Needs the WDK and a matching Visual Studio. The experiment is x64-only by
-design (CR8, `LGDT`/`LIDT`, MSR interfaces, MASM); ARM64 configs compile
-to a loader that refuses with `STATUS_NOT_SUPPORTED`.
+design (CR8, `LGDT`/`LIDT`, MSR interfaces, MASM); there are no ARM64
+configs.
 
 ```
-msbuild nmi-abuse\nmi-abuse.vcxproj -p:Configuration=Debug   -p:Platform=x64
-msbuild nmi-abuse\nmi-abuse.vcxproj -p:Configuration=Release -p:Platform=x64
+msbuild nmi-immunity\nmi-immunity.vcxproj -p:Configuration=Debug   -p:Platform=x64
+msbuild nmi-immunity\nmi-immunity.vcxproj -p:Configuration=Release -p:Platform=x64
 ```
 
-Full matrix (Debug/Release × x64/ARM64) builds with zero warnings and is
+Debug/Release × x64 builds with zero warnings and is
 PREfast-clean. If package verification fails on a missing `InfVerif.dll`,
 that is a broken WDK install on the build machine (it fails the same way
 for any driver there); pass `-p:SkipPackageVerification=true` for local
@@ -461,7 +461,7 @@ iteration only — never bake it into the project.
 
 Loading needs test signing on the target. The INF installs a demand-start
 kernel service and nothing else (primitive driver: right-click Install, or
-`pnputil`, then `sc start nmi-abuse`; `sc stop nmi-abuse` to end, which
+`pnputil`, then `sc start nmi-immunity`; `sc stop nmi-immunity` to end, which
 takes one cycle at most).
 
 Machine notes: the VSL/HyperV branch inside the gadget is assumed never

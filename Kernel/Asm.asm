@@ -38,6 +38,7 @@
 
 EXTERN AsmRecordEvent:PROC
 EXTERN AsmMetricRecord:PROC
+EXTERN ShmHandleRequest:PROC
 EXTERN KeBugCheckEx:PROC
 EXTERN PsTerminateSystemThread:PROC
 
@@ -113,6 +114,9 @@ g_AsmUpTsc          QWORD 0             ; TSC at first stash (0 until up)
 
 PUBLIC g_AsmMetricBuffer
 g_AsmMetricBuffer   QWORD 0             ; PKM_METRIC_BUFFER, may be 0
+
+PUBLIC g_AsmShmBase
+g_AsmShmBase        QWORD 0             ; SHM mailbox kernel VA, 0 = disabled
 
 .CODE
 
@@ -506,6 +510,28 @@ AsmNmiStub PROC
     jz @@norec1
     DO_RECORD rcx, 8, 2, QWORD PTR [rbx], QWORD PTR [rbx+24], rax, QWORD PTR [rbx-16]
 @@norec1:
+    ; SHM request service. Base set, plus a pending request at
+    ; [base+8], plus CR8 == 15 (HIGH_LEVEL), or the call is skipped:
+    ; the C handler runs with interrupts disabled and may touch
+    ; resident memory only (see the IRQL contract in
+    ; SharedMemoryHandler.h). Five instructions when idle. RAX/RCX/R11
+    ; are scratch from here (reloaded below); RBX and the pushed
+    ; registers survive the call per the x64 ABI.
+    mov rax, [g_AsmShmBase]
+    test rax, rax
+    jz @@shm_done
+    cmp DWORD PTR [rax+8], 0
+    je @@shm_done
+    mov r11, cr8
+    cmp r11, 15
+    jne @@shm_done
+    mov r11, rsp
+    and rsp, 0FFFFFFFFFFFFFFF0h
+    sub rsp, 20h
+    mov rcx, [g_AsmShmBase]
+    call ShmHandleRequest
+    mov rsp, r11
+@@shm_done:
     cmp QWORD PTR [g_AsmEntryRsp], 0
     je @@transparent
     ; Union interval check on the interrupted RIP (mode-flap immune).
@@ -901,8 +927,8 @@ AsmDefaultCommon PROC
     int 3
 AsmDefaultCommon ENDP
 
-; AsmMcStub: vector 18 has no error code. A machine check under the
-; experiment cannot be continued past: record and bugcheck with the
+; AsmMcStub: vector 18 has no error code. A machine check under nmi-immunity 
+; cannot be continued past: record and bugcheck with the
 ; architectural MACHINE_CHECK_EXCEPTION code.
 
 PUBLIC AsmMcStub

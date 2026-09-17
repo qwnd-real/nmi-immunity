@@ -30,8 +30,6 @@ Abstract:
 
 #define APIC_POOL_TAG                   'pAmN'
 
-#if defined(_AMD64_)
-
 #pragma code_seg(push)
 #pragma code_seg("PAGE")
 
@@ -195,40 +193,3 @@ Return Value:
 }
 
 #pragma code_seg(pop)
-
-#else
-
-//
-// Non x64 stub. The experiment needs CR8, LGDT/LIDT and the xAPIC/x2APIC
-// MSRs, so it is x64 only.
-//
-
-_Use_decl_annotations_
-NTSTATUS
-ApicInitialize(
-    PAPIC_STATE State
-)
-{
-    RtlZeroMemory(State, sizeof(*State));
-    return STATUS_NOT_SUPPORTED;
-}
-
-_Use_decl_annotations_
-VOID
-ApicUninitialize(
-    PAPIC_STATE State
-)
-{
-    UNREFERENCED_PARAMETER(State);
-}
-
-_Use_decl_annotations_
-VOID
-ApicPublishMarkers(
-    PAPIC_STATE State
-)
-{
-    UNREFERENCED_PARAMETER(State);
-}
-
-#endif

@@ -1,7 +1,7 @@
 ;
-; nmi-abuse.inf
+; nmi-immunity.inf
 ;
-; Primitive driver package: nmi-abuse owns no hardware and binds to no device,
+; Primitive driver package: nmi-immunity owns no hardware and binds to no device,
 ; so it installs a kernel service and nothing else.
 ;
 
@@ -11,7 +11,7 @@ Class=System
 ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
 Provider=%ManufacturerName%
 DriverVer=
-CatalogFile=nmi-abuse.cat
+CatalogFile=nmi-immunity.cat
 PnpLockdown=1
 
 [DestinationDirs]
@@ -21,25 +21,25 @@ DefaultDestDir = 13
 1 = %DiskName%,,,""
 
 [SourceDisksFiles]
-nmi-abuse.sys = 1,,
+nmi-immunity.sys = 1,,
 
 [DefaultInstall.NT$ARCH$]
-CopyFiles = NmiAbuse.CopyFiles
+CopyFiles = NmiImmunity.CopyFiles
 
 [DefaultInstall.NT$ARCH$.Services]
-AddService = nmi-abuse,0x00000800,NmiAbuse.Service ; SPSVCINST_STARTSERVICE
+AddService = nmi-immunity,0x00000800,NmiImmunity.Service ; SPSVCINST_STARTSERVICE
 
-[NmiAbuse.CopyFiles]
-nmi-abuse.sys
+[NmiImmunity.CopyFiles]
+nmi-immunity.sys
 
-[NmiAbuse.Service]
+[NmiImmunity.Service]
 DisplayName   = %ServiceName%
 ServiceType   = 1 ; SERVICE_KERNEL_DRIVER
 StartType     = 3 ; SERVICE_DEMAND_START
 ErrorControl  = 1 ; SERVICE_ERROR_NORMAL
-ServiceBinary = %13%\nmi-abuse.sys
+ServiceBinary = %13%\nmi-immunity.sys
 
 [Strings]
 ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
-DiskName="nmi-abuse Source Disk"
-ServiceName="nmi-abuse NMI experiment"
+DiskName="nmi-immunity Source Disk"
+ServiceName="nmi-immunity"

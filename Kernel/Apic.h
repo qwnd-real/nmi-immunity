@@ -10,14 +10,14 @@ Module Name:
 
 Abstract:
 
-    This module declares the local APIC delivery mechanism for the
-    experiment: one self-NMI request per cycle, issued either through the
+    This module declares the local APIC delivery mechanism for nmi-immunity: 
+    one self-NMI request per cycle, issued either through the
     legacy memory mapped interface (xAPIC) or the MSR interface (x2APIC),
     chosen once at setup from CPUID.1 ECX[21] plus the IA32_APIC_BASE
     ENABLE and X2APIC bits.
 
-    The actual ICR write lives in assembly (Asm.asm), because the
-    experiment needs an architectural boundary exactly after the write:
+    The actual ICR write lives in assembly (Asm.asm), because nmi-immunity
+    needs an architectural boundary exactly after the write:
     the marker that follows it is the one observable the NMI handler's
     RIP test uses. The C++ side owns detection, state and teardown.
 

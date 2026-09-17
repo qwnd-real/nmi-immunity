@@ -10,8 +10,7 @@ Module Name:
 
 Abstract:
 
-    This module declares a single-PTE physical memory window for the
-    experiment.
+    This module declares a single-PTE physical memory window for nmi-immunity.
 
     One contiguous page is allocated at setup. The PTE base is
     discovered at setup by locating the self-referencing PML4 entry,
@@ -122,7 +121,7 @@ _IRQL_requires_max_(HIGH_LEVEL)
 NTSTATUS
 PhysicalWrite(
     _In_ ULONG64 PhysicalAddress,
-    _In_reads_bytes_(Size) PCVOID Buffer,
+    _In_reads_bytes_(Size) CONST PVOID Buffer,
     _In_ SIZE_T Size
 );
 

@@ -130,6 +130,15 @@ extern ULONG64 g_AsmIssueSeq;
 extern ULONG64 g_AsmUpTsc;
 extern ULONG64 g_AsmMetricBuffer;
 
+//
+// Mailbox base for the NMI stub's SHM service check. Published once by
+// the handshake before the worker is born, cleared by teardown after
+// it stops. The stub tests it for zero and the pending flag at
+// [base+8] before calling ShmHandleRequest, gated on CR8 == 15.
+//
+
+extern ULONG64 g_AsmShmBase;
+
 /*++
 
 Structure Description:
@@ -152,7 +161,7 @@ C_ASSERT(sizeof(ASM_DESCRIPTOR_RAW) == 10);
 
 //
 // Privileged reads this MSVC exposes no intrinsic for. SGDT is the
-// only one the experiment needs: CS/SS come from RtlCaptureContext,
+// only one nmi-immunity needs: CS/SS come from RtlCaptureContext,
 // and TR is intentionally never read.
 //
 

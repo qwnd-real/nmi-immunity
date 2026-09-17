@@ -9,14 +9,6 @@
       <Configuration>Release</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
-    <ProjectConfiguration Include="Debug|ARM64">
-      <Configuration>Debug</Configuration>
-      <Platform>ARM64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release|ARM64">
-      <Configuration>Release</Configuration>
-      <Platform>ARM64</Platform>
-    </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{89E6C256-6B44-4B89-E429-F448B8BB1BB4}</ProjectGuid>
@@ -25,7 +17,11 @@
     <MinimumVisualStudioVersion>12.0</MinimumVisualStudioVersion>
     <Configuration>Debug</Configuration>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
-    <RootNamespace>nmi_abuse</RootNamespace>
+    <RootNamespace>Kernel</RootNamespace>
+    <!-- The project was renamed from nmi-immunity to Kernel; the binary
+         keeps its installed name so the INF, the service and existing
+         tooling keep working. -->
+    <TargetName>nmi-immunity</TargetName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -36,20 +32,6 @@
     <DriverType>WDM</DriverType>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <TargetVersion>Windows10</TargetVersion>
-    <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
-    <ConfigurationType>Driver</ConfigurationType>
-    <DriverType>WDM</DriverType>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'" Label="Configuration">
-    <TargetVersion>Windows10</TargetVersion>
-    <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
-    <ConfigurationType>Driver</ConfigurationType>
-    <DriverType>WDM</DriverType>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
     <TargetVersion>Windows10</TargetVersion>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
@@ -70,12 +52,6 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
-    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
-    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
-  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <DriverSign>
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
@@ -93,12 +69,12 @@
     <ClCompile Include="KmModule.cpp" />
     <ClCompile Include="Physical.cpp" />
     <ClCompile Include="Restore.cpp" />
+    <ClCompile Include="SharedMemoryHandler.cpp" />
+    <ClCompile Include="Sweep.cpp" />
     <ClCompile Include="Tables.cpp" />
     <ClCompile Include="Trace.cpp" />
     <ClCompile Include="Worker.cpp" />
-    <Masm Include="Asm.asm">
-      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
-    </Masm>
+    <Masm Include="Asm.asm" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Apic.h" />
@@ -108,12 +84,15 @@
     <ClInclude Include="KmModule.h" />
     <ClInclude Include="Physical.h" />
     <ClInclude Include="Restore.h" />
+    <ClInclude Include="SharedMemoryHandler.h" />
+    <ClInclude Include="Sweep.h" />
+    <ClInclude Include="..\Shared\Communication.h" />
     <ClInclude Include="Tables.h" />
     <ClInclude Include="Trace.h" />
     <ClInclude Include="Worker.h" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="nmi-abuse.inf" />
+    <Inf Include="nmi-immunity.inf" />
   </ItemGroup>
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" />
