@@ -1,0 +1,45 @@
+# Build outputs
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleasePublic/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+[Ww][Ii][Nn]32/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+ipch/
+*.code-workspace
+
+# WDK / driver build artifacts
+*.sys
+*.pdb
+*.ipdb
+*.iobj
+*.exp
+*.cer
+*.cat
+*.recipe
+*.tlog
+*.wrn
+*.err
+*.log
+*.cdf
+packages/
