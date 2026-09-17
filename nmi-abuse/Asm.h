@@ -103,12 +103,13 @@ AsmApicWriteX2apicAddress(
 //
 // Assembly-owned shared state, filled by the worker before thread
 // creation (except EntryRsp and CycleCount, which the stubs own). The
-// ICR addresses come from the APIC module; the descriptor fields and
-// the block/routine pair from the tables and restore modules; the
-// event buffer and stop flag from the worker.
+// APIC ID and ICR addresses come from the APIC module; the descriptor
+// fields and block/routine pair from the tables and restore modules;
+// the event buffer and stop flag from the worker.
 //
 
 extern volatile ULONG g_AsmApicMode;
+extern ULONG g_AsmApicId;
 extern ULONG64 g_AsmXapicIcrLow;
 extern ULONG64 g_AsmXapicIcrHigh;
 extern USHORT g_AsmNativeGdtrLimit;

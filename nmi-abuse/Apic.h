@@ -70,12 +70,13 @@ typedef struct _APIC_STATE APIC_STATE, *PAPIC_STATE;
 #define APIC_MODE_X2APIC                1UL
 
 //
-// IA32_APIC_BASE MSR layout and the x2APIC ICR MSR. The mode decision
+// IA32_APIC_BASE MSR layout and the x2APIC ID/ICR MSRs. The mode decision
 // reads CPUID.1 ECX[21] (x2APIC support) and the ENABLE_X2APIC bit;
 // topology leaves such as CPUID.0x1A describe cores, not the interface.
 //
 
 #define APIC_MSR_BASE                   0x1BUL
+#define APIC_MSR_X2APIC_ID              0x802UL
 #define APIC_MSR_X2APIC_ICR             0x830UL
 #define APIC_BASE_ENABLE_BIT            0x800UL
 #define APIC_BASE_X2APIC_BIT            0x400UL
@@ -85,17 +86,9 @@ typedef struct _APIC_STATE APIC_STATE, *PAPIC_STATE;
 // xAPIC register offsets from the mapped base.
 //
 
+#define APIC_XAPIC_ID_OFFSET            0x020UL
 #define APIC_XAPIC_ICR_LOW_OFFSET       0x300UL
 #define APIC_XAPIC_ICR_HIGH_OFFSET      0x310UL
-
-//
-// One self-NMI request: vector 0, NMI delivery mode (100b), self
-// shorthand (01b). Level and trigger are ignored for NMI.
-//
-
-#define APIC_ICR_SELF_NMI_LOW           0x00040400UL
-#define APIC_ICR_SELF_NMI_HIGH          0x00000000UL
-#define APIC_ICR_SELF_NMI_X2APIC        0x0000000000040400ULL
 
 //
 // Pause iterations between reissues inside the assembly window. This is
@@ -131,16 +124,18 @@ typedef struct _APIC_STATE APIC_STATE, *PAPIC_STATE;
 
 Structure Description:
 
-    Detection result and, for xAPIC, the mapped register window. The ICR
-    writes themselves live in Asm.asm so the marker can sit exactly after
-    them; this structure only tells that code which interval is active
-    and where the xAPIC registers are.
+    Detection result, the target's physical APIC ID and, for xAPIC, the
+    mapped register window. Capture while pinned to the target processor;
+    a Windows processor number is not an APIC ID. Asm.asm uses explicit
+    physical destination addressing for both loop and synthetic NMIs.
+    The ICR writes stay in assembly so the markers immediately follow them.
 
 --*/
 
 typedef struct _APIC_STATE
 {
     ULONG Mode;
+    ULONG ApicId;
     PVOID XapicMapping;
     volatile ULONG* IcrLow;
     volatile ULONG* IcrHigh;

@@ -89,6 +89,7 @@ Return Value:
     UNREFERENCED_PARAMETER(Processor);
 
     g_AsmApicMode = g_WorkerApic.Mode;
+    g_AsmApicId = g_WorkerApic.ApicId;
     g_AsmXapicIcrLow = (ULONG64)(ULONG_PTR)g_WorkerApic.IcrLow;
     g_AsmXapicIcrHigh = (ULONG64)(ULONG_PTR)g_WorkerApic.IcrHigh;
     g_AsmNativeGdtrLimit = g_WorkerTables.NativeLimit;

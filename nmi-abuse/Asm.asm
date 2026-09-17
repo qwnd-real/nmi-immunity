@@ -53,6 +53,9 @@ EXTERN PsTerminateSystemThread:PROC
 PUBLIC g_AsmApicMode
 g_AsmApicMode       DWORD 0             ; 0 = xAPIC, 1 = x2APIC
 
+PUBLIC g_AsmApicId
+g_AsmApicId         DWORD 0             ; target's physical APIC ID
+
 PUBLIC g_AsmXapicIcrLow
 g_AsmXapicIcrLow    QWORD 0             ; mapped ICR low address (xAPIC)
 
@@ -103,7 +106,7 @@ PUBLIC g_AsmDwellIters
 g_AsmDwellIters     QWORD 4100          ; pre-issue disarmed dwell (pauses/cycle)
 
 PUBLIC g_AsmIssueSeq
-g_AsmIssueSeq       QWORD 0             ; issues completed (lock-inc at @@issue)
+g_AsmIssueSeq       QWORD 0             ; issue attempts (lock-inc before write)
 
 PUBLIC g_AsmUpTsc
 g_AsmUpTsc          QWORD 0             ; TSC at first stash (0 until up)
@@ -216,25 +219,41 @@ AsmApicWriteX2apicAddress ENDP
 ;
 ; --*/
 
-; AsmSingleSelfNmi: one synthetic self-NMI request (ICR low 0x40400).
+; NMI, edge-triggered, physical destination, no shorthand. AMD APM Vol. 2,
+; Table 16-4 excludes Self shorthand for NMI; address the captured APIC ID
+; explicitly. Both normal and synthetic sends use these sequences. Their
+; last instruction is the issuing write, keeping Committed immediately
+; after it when expanded in the loops below. Clobbers RAX, RCX, RDX only.
+
+APIC_ICR_NMI_LOW EQU 400h
+
+ISSUE_XAPIC_NMI MACRO
+    mov edx, DWORD PTR [g_AsmApicId]
+    shl edx, 24                    ; xAPIC destination is ICR_HIGH[31:24]
+    mov rax, [g_AsmXapicIcrHigh]
+    mov DWORD PTR [rax], edx
+    mov rax, [g_AsmXapicIcrLow]
+    mov DWORD PTR [rax], APIC_ICR_NMI_LOW
+ENDM
+
+ISSUE_X2APIC_NMI MACRO
+    mov ecx, 830h
+    mov edx, DWORD PTR [g_AsmApicId] ; x2APIC uses the full 32-bit ID
+    mov eax, APIC_ICR_NMI_LOW
+    wrmsr
+ENDM
+
+; AsmSingleSelfNmi: one synthetic self-NMI request.
 ; Deliberate crosser -- see the NMI stub header. Clobbers RAX, RCX, RDX;
-; RBX is kept. Mode is read fresh so a (hypothetical) mode flap between
-; setup and delivery still does the right write.
+; RBX is kept. Mode and destination are captured during pinned setup.
 
 AsmSingleSelfNmi PROC
     cmp DWORD PTR [g_AsmApicMode], 1
     je @@x2
-    ; xAPIC: high = 0 (self shorthand ignores destination), then low.
-    mov rax, [g_AsmXapicIcrHigh]
-    mov DWORD PTR [rax], 0
-    mov rax, [g_AsmXapicIcrLow]
-    mov DWORD PTR [rax], 40400h
+    ISSUE_XAPIC_NMI
     ret
 @@x2:
-    mov ecx, 830h
-    xor edx, edx
-    mov eax, 40400h
-    wrmsr
+    ISSUE_X2APIC_NMI
     ret
 AsmSingleSelfNmi ENDP
 
@@ -249,10 +268,7 @@ PUBLIC AsmApicXapicEnd
 AsmApicWriteXapic PROC
 @@issue:
     lock inc QWORD PTR [g_AsmIssueSeq]
-    mov rax, [g_AsmXapicIcrHigh]
-    mov DWORD PTR [rax], 0
-    mov rax, [g_AsmXapicIcrLow]
-    mov DWORD PTR [rax], 40400h
+    ISSUE_XAPIC_NMI
 AsmApicXapicCommitted::
     mov ecx, 20000
 @@spin:
@@ -278,10 +294,7 @@ PUBLIC AsmApicX2apicEnd
 AsmApicWriteX2apic PROC
 @@issue:
     lock inc QWORD PTR [g_AsmIssueSeq]
-    mov ecx, 830h
-    xor edx, edx
-    mov eax, 40400h
-    wrmsr
+    ISSUE_X2APIC_NMI
 AsmApicX2apicCommitted::
     mov ecx, 20000
 @@spin:
@@ -529,7 +542,7 @@ AsmNmiStub PROC
     jb @@foreign_dwell
     ; Prologue drop 2: [WriteXapic, XapicCommitted) -- dispatch bytes
     ; between DwellEnd and the loop fall through to foreign (post-dwell
-    ; safe), only the 3-insn issue prologue drops.
+    ; safe), only the issue prologue drops.
     lea rax, [AsmApicWriteXapic]
     lea rcx, [AsmApicXapicCommitted]
     cmp r10, rax

@@ -45,7 +45,8 @@ ApicInitialize(
 Routine Description:
 
     Detects the active APIC interface and maps the xAPIC window when
-    needed. CPUID.1 ECX[21] reports x2APIC support; the IA32_APIC_BASE
+    needed. Captures the hardware APIC ID while pinned to the target
+    processor. CPUID.1 ECX[21] reports x2APIC support; the IA32_APIC_BASE
     MSR reports whether the local APIC is enabled and whether x2APIC
     mode is actually on. Support without enablement still means xAPIC.
 
@@ -90,15 +91,16 @@ Return Value:
         ((ApicBase & APIC_BASE_X2APIC_BIT) != 0))
     {
         State->Mode = APIC_MODE_X2APIC;
+        State->ApicId = (ULONG)__readmsr(APIC_MSR_X2APIC_ID);
 
-        KmPrint("APIC mode - x2APIC (BASE=0x%I64X)\n", ApicBase);
+        KmPrint("APIC mode - x2APIC (BASE=0x%I64X Id=0x%X)\n",
+            ApicBase, State->ApicId);
         return STATUS_SUCCESS;
     }
 
     //
-    // xAPIC: map the 4K register page non-cached. Only the ICR pair is
-    // ever touched, by the assembly window, but the whole page is the
-    // mapping granularity.
+    // xAPIC: map the 4K register page non-cached, capture the ID from
+    // bits 31:24, and publish the ICR pair for the assembly send paths.
     //
 
     Physical.QuadPart = (LONGLONG)(ApicBase & APIC_BASE_ADDRESS_MASK);
@@ -113,13 +115,15 @@ Return Value:
     }
 
     State->XapicMapping = Mapping;
+    State->ApicId = READ_REGISTER_ULONG((volatile ULONG*)((PUCHAR)Mapping +
+                                      APIC_XAPIC_ID_OFFSET)) >> 24;
     State->IcrLow = (volatile ULONG*)((PUCHAR)Mapping +
                                       APIC_XAPIC_ICR_LOW_OFFSET);
     State->IcrHigh = (volatile ULONG*)((PUCHAR)Mapping +
                                        APIC_XAPIC_ICR_HIGH_OFFSET);
 
-    KmPrint("APIC mode - xAPIC (Base=0x%I64X Mapping=%p)\n",
-        (ULONG64)Physical.QuadPart, Mapping);
+    KmPrint("APIC mode - xAPIC (Base=0x%I64X Mapping=%p Id=0x%X)\n",
+        (ULONG64)Physical.QuadPart, Mapping, State->ApicId);
 
     return STATUS_SUCCESS;
 }

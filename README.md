@@ -229,16 +229,26 @@ Windows, is at fault — hence bugcheck, never guess.
 Mode detection runs once at setup (`Apic.cpp`): CPUID.1 ECX[21] for x2APIC
 support plus the `ENABLE_X2APIC` bit in `IA32_APIC_BASE`. x2APIC mode needs
 nothing mapped; xAPIC mode maps the 4K register page non-cached for the
-ICR pair. The request itself — one self-NMI, vector 0, NMI delivery mode,
-self shorthand (ICR low `0x40400`, high 0) — lives in assembly, so a
-marker can sit exactly after the write:
+ICR pair. Setup also captures the pinned CPU's hardware APIC ID from
+xAPIC register `+0x20` (bits 31:24) or x2APIC MSR `0x802` (all 32 bits).
+Both loop and synthetic NMIs explicitly address that physical ID with
+ICR low `0x400`: NMI delivery, edge trigger, no destination shorthand.
+The Windows processor number is not used as an APIC ID.
+
+AMD APM Volume 2, Table 16-4 excludes the **Self** destination shorthand
+for NMI. The old `0x40400` combined individually valid fields into an
+unsupported command; VM acceptance did not establish hardware support.
+The assembly send macros share the corrected encoding and keep each
+`Committed` marker immediately after the issuing write:
 
 ```asm
 ; xAPIC:
-mov  [ICR_high], 0
-mov  [ICR_low], 040400h
+mov  edx, [g_AsmApicId]
+shl  edx, 24
+mov  [ICR_high], edx
+mov  [ICR_low], 400h
 Committed:                        ; <-- marker: the write completed
-    mov  ecx, 100000
+    mov  ecx, 20000
 spin:
     pause
     dec  ecx
@@ -247,7 +257,7 @@ spin:
     jmp  issue
 End:                              ; <-- interval end (pure marker)
 
-; x2APIC: mov ecx, 830h / xor edx, edx / mov eax, 40400h / wrmsr
+; x2APIC: mov ecx, 830h / mov edx, [g_AsmApicId] / mov eax, 400h / wrmsr
 ;         (same shape around it)
 ```
 
