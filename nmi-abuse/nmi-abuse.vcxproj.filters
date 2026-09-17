@@ -31,6 +31,9 @@
     <ClCompile Include="KmModule.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Physical.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Restore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -61,6 +64,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KmModule.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Physical.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Restore.h">
