@@ -2,6 +2,8 @@
 #include "Asm.h"
 #include "Debug.h"
 
+#include <intrin.h>
+
 /*++
 
 Module Name:
@@ -350,3 +352,200 @@ C_ASSERT(KmEventUnexpectedFault == 12);
 
 C_ASSERT(sizeof(KM_EVENT_RECORD) == 48);
 C_ASSERT(FIELD_OFFSET(KM_EVENT_RECORD, Detail) == 40);
+
+#if KM_METRICS
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+KmMetricInitialize(
+    PKM_METRIC_BUFFER Buffer,
+    const PROCESSOR_NUMBER* Processor
+)
+/*++
+
+Routine Description:
+
+    Initializes the metric buffer before the owner makes it reachable
+    by the NMI stub. Reinitialization requires producer quiescence,
+    same contract as KmEventInitialize. Processor must not alias storage
+    inside Buffer, which is cleared first.
+
+--*/
+{
+    RtlZeroMemory(Buffer, sizeof(*Buffer));
+    Buffer->Processor = *Processor;
+}
+
+_IRQL_requires_max_(HIGH_LEVEL)
+VOID
+KmMetricRecord(
+    PKM_METRIC_BUFFER Buffer,
+    ULONG64 Rip,
+    ULONG64 Rsp,
+    ULONG Flags
+)
+/*++
+
+Routine Description:
+
+    Attempts one bounded per-delivery append. NMI-safe: RDTSC plus
+    interlocked reservation plus resident stores only; no MSR reads,
+    no waits, no retries, no kernel calls. Failure sets Dropped and
+    changes no control flow; a run with Dropped != 0 is invalid for
+    any metric claim.
+
+--*/
+{
+    LONG Index;
+    PKM_METRIC_RECORD Record;
+
+    Index = InterlockedCompareExchange(&Buffer->NextRecord, 0, 0);
+
+    if ((ULONG)Index >= KM_METRIC_CAPACITY)
+    {
+        (VOID)InterlockedExchange(&Buffer->Dropped, 1);
+        return;
+    }
+
+    if (InterlockedCompareExchange(&Buffer->NextRecord, Index + 1, Index) != Index)
+    {
+        (VOID)InterlockedExchange(&Buffer->Dropped, 1);
+        return;
+    }
+
+    Record = &Buffer->Records[Index];
+    Record->Flags = Flags;
+    Record->Cpu = (ULONG)Buffer->Processor.Number;
+    Record->Reserved0 = 0;
+    Record->Tsc = __rdtsc();
+    Record->Seq = (ULONG64)(ULONG)Index;
+    Record->Cycle = (ULONG64)InterlockedCompareExchange64(
+        (LONG64 volatile*)&g_AsmCycleCount, 0, 0);
+    Record->Issue = (ULONG64)InterlockedCompareExchange64(
+        (LONG64 volatile*)&g_AsmIssueSeq, 0, 0);
+    Record->Rip = Rip;
+    Record->Rsp = Rsp;
+
+    (VOID)InterlockedExchange(&Record->Published, 1);
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+KmMetricDump(
+    const KM_METRIC_BUFFER* Buffer
+)
+/*++
+
+Routine Description:
+
+    Prints a stopped metric buffer. Same quiescence contract as
+    KmEventDump: no producer may still access the buffer.
+
+--*/
+{
+    ULONG Count;
+    ULONG Index;
+    const KM_METRIC_RECORD* Record;
+
+    Count = (ULONG)Buffer->NextRecord;
+
+    if (Count > KM_METRIC_CAPACITY)
+    {
+        KmError("Invalid metric buffer - Reservations=%u Capacity=%u\n",
+            Count, KM_METRIC_CAPACITY);
+        return;
+    }
+
+    KmPrint("Metric buffer - Processor=%u:%u Reservations=%u Dropped=%ld "
+        "UpTsc=0x%I64X StopSetTsc=0x%I64X ThreadExitTsc=0x%I64X\n",
+        (ULONG)Buffer->Processor.Group, (ULONG)Buffer->Processor.Number,
+        Count, Buffer->Dropped,
+        Buffer->UpTsc, Buffer->StopSetTsc, Buffer->ThreadExitTsc);
+
+    for (Index = 0; Index < Count; Index += 1)
+    {
+        Record = &Buffer->Records[Index];
+
+        if (Record->Published == 0)
+        {
+            KmWarning("Metric[%u] - Reserved but not published\n", Index);
+            continue;
+        }
+
+        KmTrace("Metric[%u] - Flags=0x%08X Cpu=%u Tsc=0x%016I64X Seq=%I64u "
+            "Cycle=%I64u Issue=%I64u Rip=0x%016I64X Rsp=0x%016I64X\n",
+            Index, Record->Flags, Record->Cpu, Record->Tsc, Record->Seq,
+            Record->Cycle, Record->Issue, Record->Rip, Record->Rsp);
+    }
+
+    if (Buffer->Dropped != 0)
+    {
+        KmWarning("Metric history is incomplete - run is invalid for claims\n");
+    }
+}
+
+EXTERN_C_START
+
+_IRQL_requires_max_(HIGH_LEVEL)
+VOID
+AsmMetricRecord(
+    _In_opt_ PVOID Buffer,
+    _In_ ULONG64 Rip,
+    _In_ ULONG64 Rsp,
+    _In_ ULONG Flags
+)
+/*++
+
+Routine Description:
+
+    Unmangled forwarder over KmMetricRecord for the assembly stubs.
+    Same contract: one bounded append, lossy by design, never affects
+    dispatch. Resident in every build when KM_METRICS=1.
+
+--*/
+{
+    if (Buffer == NULL)
+    {
+        return;
+    }
+
+    KmMetricRecord(
+        (PKM_METRIC_BUFFER)Buffer,
+        Rip,
+        Rsp,
+        Flags
+    );
+}
+
+EXTERN_C_END
+
+C_ASSERT(sizeof(KM_METRIC_RECORD) == 64);
+C_ASSERT(FIELD_OFFSET(KM_METRIC_RECORD, Rip) == 48);
+
+#else
+
+//
+// Resident link stub so Asm.asm (which unconditionally EXTERNs and calls
+// AsmMetricRecord) still links when KM_METRICS=0. Records nothing.
+//
+
+EXTERN_C_START
+
+_IRQL_requires_max_(HIGH_LEVEL)
+VOID
+AsmMetricRecord(
+    _In_opt_ PVOID Buffer,
+    _In_ ULONG64 Rip,
+    _In_ ULONG64 Rsp,
+    _In_ ULONG Flags
+)
+{
+    UNREFERENCED_PARAMETER(Buffer);
+    UNREFERENCED_PARAMETER(Rip);
+    UNREFERENCED_PARAMETER(Rsp);
+    UNREFERENCED_PARAMETER(Flags);
+}
+
+EXTERN_C_END
+
+#endif

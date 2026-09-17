@@ -150,7 +150,7 @@ Return Value:
 
     {
         ASM_DESCRIPTOR_RAW GdtrRaw;
-        struct { USHORT Limit; ULONG64 Base; } IdtrRaw;
+        ASM_DESCRIPTOR_RAW IdtrRaw;
         CONTEXT Captured;
 
         GdtrRaw.Limit = 0;
@@ -237,7 +237,7 @@ Return Value:
 
     Block->Tr = TABLES_TR_FAULTING;
     Block->Ldtr = 0;
-    Block->Cr8 = TABLES_CR8_BLOCK_ALL;
+    Block->Cr8 = (ULONGLONG)HIGH_LEVEL;
 
     State->Idt = Idt;
     State->Block = Block;

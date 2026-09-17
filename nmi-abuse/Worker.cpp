@@ -35,6 +35,7 @@ static HANDLE g_WorkerThreadHandle = NULL;
 static PETHREAD g_WorkerThreadObject = NULL;
 static LONG volatile g_WorkerStopFlag = 0;
 static KM_EVENT_BUFFER g_WorkerEvents;
+static KM_METRIC_BUFFER g_WorkerMetrics;
 static APIC_STATE g_WorkerApic;
 static TABLES_STATE g_WorkerTables;
 static RESTORE_TARGET g_WorkerTarget;
@@ -46,34 +47,6 @@ static BOOLEAN g_WorkerRunning = FALSE;
 //
 
 static KAFFINITY g_WorkerAffinityMask = 0;
-
-//
-// ZwQueryInformationThread. Exported by ntoskrnl for the affinity
-// read-back, but not declared in the driver headers, so the prototype
-// is mirrored here the way KmModule.cpp mirrors its query.
-//
-
-EXTERN_C_START
-
-NTKERNELAPI
-NTSTATUS
-ZwQueryInformationThread(
-    _In_ HANDLE ThreadHandle,
-    _In_ THREADINFOCLASS ThreadInformationClass,
-    _Out_writes_bytes_(ThreadInformationLength) PVOID ThreadInformation,
-    _In_ ULONG ThreadInformationLength,
-    _Out_opt_ PULONG ReturnLength
-);
-
-EXTERN_C_END
-
-//
-// First-cycle proof poll: how long to wait for the #GP stub's stash,
-// and the sleep between polls.
-//
-
-#define WORKER_PROOF_TIMEOUT_MS         30000
-#define WORKER_PROOF_POLL_MS            10
 
 //
 // Forward declarations for internal helper functions
@@ -89,12 +62,6 @@ static
 VOID
 WorkerRecordSetup(
     _In_ const PROCESSOR_NUMBER* Processor
-);
-
-static
-VOID
-WorkerWaitForFirstCycle(
-    VOID
 );
 
 static
@@ -136,6 +103,11 @@ Return Value:
     g_AsmRoutine = g_WorkerTarget.RoutineAddress;
     g_AsmEntryRsp = 0;
     g_AsmCycleCount = 0;
+    g_AsmStopDrain = 0;
+    g_AsmDwellIters = APIC_DWELL_PAUSES_DEFAULT;
+    g_AsmIssueSeq = 0;
+    g_AsmUpTsc = 0;
+    g_AsmMetricBuffer = (ULONG64)(ULONG_PTR)&g_WorkerMetrics;
 
     KeMemoryBarrier();
 }
@@ -164,6 +136,7 @@ Return Value:
 --*/
 {
     KmEventInitialize(&g_WorkerEvents, Processor);
+    KmMetricInitialize(&g_WorkerMetrics, Processor);
 
     KmEventRecord(
         &g_WorkerEvents,
@@ -191,7 +164,7 @@ Return Value:
         KM_EVENT_NO_VECTOR,
         g_WorkerTarget.RoutineAddress,
         (ULONG64)(ULONG_PTR)g_WorkerTables.Block,
-        TABLES_CR8_BLOCK_ALL,
+        (ULONGLONG)HIGH_LEVEL,
         (ULONG64)(ULONG_PTR)g_WorkerTables.Idt
     );
 }
@@ -230,12 +203,13 @@ Routine Description:
     (single-group machines, the test target); a first-processor group
     above zero fails load rather than preparing state for the wrong CPU.
 
-    Proof: after unpinning, the start polls the #GP stub's entry-RSP
-    stash. A nonzero stash proves the thread reached the expected fault
-    and entered the window: the experiment is cycling. The gadget is a
-    straight line to the faulting LTR, so a healthy thread proves
-    within milliseconds; the timeout only fires when the branch
-    assumption was wrong or the machine wedged.
+    No first-cycle proof is awaited: start returns as soon as the thread
+    is born and pinned. A healthy thread stashes entry-RSP and enters
+    the window within milliseconds (watch g_AsmEntryRsp / g_AsmCycleCount
+    or the metric buffer); a wedged birth is therefore silent -- there is
+    deliberately no fail-fast here, because on oversubscribed hosts the
+    first schedule can lag far behind a timeout without anything being
+    wrong. Verification is offline, from the recorded stream.
 
     Load note, stated plainly: while cycling, the pinned CPU spends the
     great majority of its time at TPR 15, but it is not deaf. Pending
@@ -255,19 +229,17 @@ Arguments:
 
 Return Value:
 
-    STATUS_SUCCESS with the thread cycling, or a failure status. On
-    preparation failure nothing runs. On proof timeout the stop is set
-    and the thread is given a bounded wait; if it still lives past that
-    (near-impossible by construction) its tables are deliberately leaked
-    rather than freed from underneath it.
+    STATUS_SUCCESS once the thread is born and pinned (cycling is not
+    awaited -- see above), or a failure status. On preparation failure
+    nothing runs. A thread that never reaches its first cycle stays
+    silent; WorkerStop still tears everything down (a late-waking thread
+    observes the stop on its first pass and terminates itself).
 
 --*/
 {
     GROUP_AFFINITY Affinity;
     GROUP_AFFINITY PreviousAffinity;
-    LARGE_INTEGER PollInterval;
     NTSTATUS Status;
-    ULONG WaitedMs;
 
     PAGED_CODE();
 
@@ -379,6 +351,13 @@ Return Value:
     {
         KmError("Thread reference failed - Status=%s (0x%08X)\n",
             KmStatusToString(Status), Status);
+        //
+        // The thread is already alive in the gadget at this point, so
+        // it must be stopped and reaped before anything it vectors
+        // through is released. The handle is waitable as-is.
+        //
+        (VOID)InterlockedExchange(&g_WorkerStopFlag, 1);
+        (VOID)ZwWaitForSingleObject(g_WorkerThreadHandle, FALSE, NULL);
         ZwClose(g_WorkerThreadHandle);
         g_WorkerThreadHandle = NULL;
         TablesUninitialize(&g_WorkerTables);
@@ -393,8 +372,12 @@ Return Value:
     // instructions on the creator; the gadget's straight-line prefix
     // (CR writes of identical System values, same-content LGDT/LIDT)
     // is benign on any CPU, and every teardown restores from the
-    // captured natives of the CPU it then stays on. The set is read
-    // back and compared: an unpinned thread must fail load, loudly.
+    // captured natives of the CPU it then stays on.
+    //
+    // The set's status is the whole validation: the kernel checks the
+    // mask itself. There is deliberately no read-back: the query side
+    // does not implement this class (it fails INVALID_INFO_CLASS), so
+    // a read-back would fail load on a correctly pinned thread.
     //
 
     Status = ZwSetInformationThread(
@@ -404,33 +387,18 @@ Return Value:
         sizeof(g_WorkerAffinityMask)
     );
 
-    if (NT_SUCCESS(Status))
-    {
-        KAFFINITY ReadBack;
-
-        ReadBack = 0;
-
-        Status = ZwQueryInformationThread(
-            g_WorkerThreadHandle,
-            ThreadAffinityMask,
-            &ReadBack,
-            sizeof(ReadBack),
-            NULL
-        );
-
-        if (NT_SUCCESS(Status) && (ReadBack != g_WorkerAffinityMask))
-        {
-            KmError("Affinity read-back mismatch - Set=0x%I64X Got=0x%I64X\n",
-                (ULONG64)g_WorkerAffinityMask, (ULONG64)ReadBack);
-            Status = STATUS_UNSUCCESSFUL;
-        }
-    }
-
     if (!NT_SUCCESS(Status))
     {
-        KmError("Thread pinning failed - Status=%s (0x%08X)\n",
+        KmError("Thread affinity set failed - Status=%s (0x%08X)\n",
             KmStatusToString(Status), Status);
         (VOID)InterlockedExchange(&g_WorkerStopFlag, 1);
+        KeWaitForSingleObject(
+            g_WorkerThreadObject,
+            Executive,
+            KernelMode,
+            FALSE,
+            NULL
+        );
         ObDereferenceObject(g_WorkerThreadObject);
         g_WorkerThreadObject = NULL;
         ZwClose(g_WorkerThreadHandle);
@@ -447,99 +415,12 @@ Return Value:
         g_WorkerTarget.RoutineAddress, g_WorkerTables.Block,
         (ULONG)g_WorkerProcessor.Group, (ULONG)g_WorkerProcessor.Number);
 
-    //
-    // Proof poll: the #GP stub's stash means the thread faulted as
-    // designed and entered the window.
-    //
-
-    PollInterval.QuadPart = -((LONGLONG)WORKER_PROOF_POLL_MS * 10000LL);
-    WaitedMs = 0;
-
-    for (;;)
-    {
-        if (InterlockedCompareExchange64(
-                (LONG64 volatile*)&g_AsmEntryRsp, 0, 0) != 0)
-        {
-            break;
-        }
-
-        if (WaitedMs >= WORKER_PROOF_TIMEOUT_MS)
-        {
-            KmError("First cycle proof timed out - EntryRsp is still zero\n");
-            (VOID)InterlockedExchange(&g_WorkerStopFlag, 1);
-            WorkerWaitForFirstCycle();
-            return STATUS_IO_TIMEOUT;
-        }
-
-        KeDelayExecutionThread(KernelMode, FALSE, &PollInterval);
-        WaitedMs += WORKER_PROOF_POLL_MS;
-    }
-
     g_WorkerRunning = TRUE;
 
-    KmPrint("Worker cycling - EntryRsp=0x%I64X\n",
-        (ULONG64)InterlockedCompareExchange64(
-            (LONG64 volatile*)&g_AsmEntryRsp, 0, 0));
+    KmPrint("Worker started - Routine=0x%I64X Block=%p (cycling not awaited)\n",
+        g_WorkerTarget.RoutineAddress, g_WorkerTables.Block);
 
     return STATUS_SUCCESS;
-}
-
-static
-VOID
-WorkerWaitForFirstCycle(
-    VOID
-)
-/*++
-
-Routine Description:
-
-    Bounded post-timeout wait used only when the first-cycle proof
-    failed. Gives a living thread a chance to observe the stop and
-    terminate itself; if it outlives the wait its tables stay allocated
-    on purpose (freeing the IDT from underneath a thread that may still
-    vector through it would corrupt whatever runs there instead).
-
-Arguments:
-
-    None.
-
-Return Value:
-
-    None. The thread objects are always released; the tables only when
-    the thread provably exited.
-
---*/
-{
-    LARGE_INTEGER Timeout;
-    NTSTATUS Status;
-
-    PAGED_CODE();
-
-    Timeout.QuadPart = -((LONGLONG)10000 * 10000LL);
-
-    Status = KeWaitForSingleObject(
-        g_WorkerThreadObject,
-        Executive,
-        KernelMode,
-        FALSE,
-        &Timeout
-    );
-
-    if (Status == STATUS_TIMEOUT)
-    {
-        KmError("Thread outlived the stop wait - leaking tables on purpose\n");
-    }
-    else
-    {
-        TablesUninitialize(&g_WorkerTables);
-        ApicUninitialize(&g_WorkerApic);
-    }
-
-    ObDereferenceObject(g_WorkerThreadObject);
-    g_WorkerThreadObject = NULL;
-
-    ZwClose(g_WorkerThreadHandle);
-    g_WorkerThreadHandle = NULL;
 }
 
 _Use_decl_annotations_
@@ -580,6 +461,16 @@ Return Value:
 
     KmPrint("Worker stopping\n");
 
+    //
+    // Pre-wait timestamp while producers are live: safe because this
+    // header field is disjoint from the record stream (NextRecord,
+    // Dropped, Records) the NMI stub appends to; no tearing is possible
+    // on the aligned 64-bit store, and the post-wait snapshot below is
+    // taken under quiescence.
+    //
+
+    g_WorkerMetrics.StopSetTsc = __rdtsc();
+
     (VOID)InterlockedExchange(&g_WorkerStopFlag, 1);
 
     //
@@ -596,7 +487,12 @@ Return Value:
         NULL
     );
 
+    g_WorkerMetrics.ThreadExitTsc = __rdtsc();
+    g_WorkerMetrics.UpTsc = (ULONG64)InterlockedCompareExchange64(
+        (LONG64 volatile*)&g_AsmUpTsc, 0, 0);
+
     KmEventDump(&g_WorkerEvents);
+    KmMetricDump(&g_WorkerMetrics);
 
     TablesUninitialize(&g_WorkerTables);
     ApicUninitialize(&g_WorkerApic);
@@ -605,6 +501,8 @@ Return Value:
     g_AsmStopFlag = NULL;
     g_AsmBlock = 0;
     g_AsmRoutine = 0;
+    g_AsmMetricBuffer = 0;
+    g_AsmDwellIters = 0;
 
     ObDereferenceObject(g_WorkerThreadObject);
     g_WorkerThreadObject = NULL;
@@ -612,9 +510,12 @@ Return Value:
     ZwClose(g_WorkerThreadHandle);
     g_WorkerThreadHandle = NULL;
 
-    KmPrint("Worker stopped - Cycles=%I64u\n",
+    KmPrint("Worker stopped - Cycles=%I64u Issues=%I64u UpTsc=0x%I64X\n",
         (ULONG64)InterlockedCompareExchange64(
-            (LONG64 volatile*)&g_AsmCycleCount, 0, 0));
+            (LONG64 volatile*)&g_AsmCycleCount, 0, 0),
+        (ULONG64)InterlockedCompareExchange64(
+            (LONG64 volatile*)&g_AsmIssueSeq, 0, 0),
+        g_WorkerMetrics.UpTsc);
 }
 
 #pragma code_seg(pop)

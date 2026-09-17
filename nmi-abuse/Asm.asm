@@ -37,6 +37,7 @@
 ; ---------------------------------------------------------------------
 
 EXTERN AsmRecordEvent:PROC
+EXTERN AsmMetricRecord:PROC
 EXTERN KeBugCheckEx:PROC
 EXTERN PsTerminateSystemThread:PROC
 
@@ -94,6 +95,22 @@ g_AsmEntryRsp       QWORD 0             ; stashed gadget-entry RSP, 0 until set
 PUBLIC g_AsmCycleCount
 g_AsmCycleCount     QWORD 0             ; consumed-NMI cycles
 
+PUBLIC g_AsmStopDrain
+g_AsmStopDrain      DWORD 0             ; GP-stop drain performed once
+g_AsmStopDrainPad   DWORD 0
+
+PUBLIC g_AsmDwellIters
+g_AsmDwellIters     QWORD 4100          ; pre-issue disarmed dwell (pauses/cycle)
+
+PUBLIC g_AsmIssueSeq
+g_AsmIssueSeq       QWORD 0             ; issues completed (lock-inc at @@issue)
+
+PUBLIC g_AsmUpTsc
+g_AsmUpTsc          QWORD 0             ; TSC at first stash (0 until up)
+
+PUBLIC g_AsmMetricBuffer
+g_AsmMetricBuffer   QWORD 0             ; PKM_METRIC_BUFFER, may be 0
+
 .CODE
 
 ; ---------------------------------------------------------------------
@@ -130,39 +147,79 @@ AsmMcStubAddress PROC
     ret
 AsmMcStubAddress ENDP
 
+PUBLIC AsmDwellStartAddress
+AsmDwellStartAddress PROC
+    lea rax, [AsmDwellStart]
+    ret
+AsmDwellStartAddress ENDP
+
+PUBLIC AsmDwellEndAddress
+AsmDwellEndAddress PROC
+    lea rax, [AsmDwellEnd]
+    ret
+AsmDwellEndAddress ENDP
+
+PUBLIC AsmApicWriteXapicAddress
+AsmApicWriteXapicAddress PROC
+    lea rax, [AsmApicWriteXapic]
+    ret
+AsmApicWriteXapicAddress ENDP
+
+PUBLIC AsmApicWriteX2apicAddress
+AsmApicWriteX2apicAddress PROC
+    lea rax, [AsmApicWriteX2apic]
+    ret
+AsmApicWriteX2apicAddress ENDP
+
 ; /*++
 ;
 ; Part 2: APIC_WRITE window.
 ;
 ; Two loops, one per APIC mode, each shaped identically:
 ;
+;     lock inc IssueSeq
 ;     ICR write
 ;   Committed:                      ; <-- marker: write has completed
-;     pause x 100000
+;     pause x 20000
 ;     stop check (unload path)
 ;     jmp ICR write
 ;   End:                            ; <-- marker: interval end
 ;
-; The NMI handler compares the interrupted RIP against [Committed, End)
-; of the active mode. Inside means the self-NMI was requested and the
-; core is spinning; that delivery is consumed as the expected one.
-; Below Committed means the NMI arrived before any request completed,
-; so it must be foreign and a single compensating ICR write is issued
-; before teardown.
+; The NMI handler compares the interrupted RIP against the UNION of both
+; modes' [Committed, End): inside either means the self-NMI was requested
+; and the core is spinning. Outside with the protocol up is foreign by
+; default (dwell, gadget, dispatch bytes) EXCEPT the two prologue drop
+; intervals -- [GpStub, DwellStart) and [Write*, Committed) -- which are
+; consumed as an expected drop with no synthetic (see the NMI stub
+; header). Either way the shared teardown runs; the foreign case
+; additionally issues one synthetic self-NMI first. That synthetic
+; is the design's only allowed crosser: consumed natively right after
+; the teardown's restore+iretq, where the sender's expecting NMI
+; callback claims it. A loop issue crossing instead -- sourceless and
+; unowned -- is answered by Windows with NMI_HARDWARE_FAILURE, which is
+; why issues happen only at the loop top, every delivery is consumed in
+; a stub, and the stop paths drain rather than terminate over a pending
+; request.
 ;
 ; The stop check reads g_AsmStopFlag once per batch. When set, the loop
-; exits through the GP stop path (part 4), which restores the natives
-; and terminates the thread on its clean stack. Without it, an unload
-; during a quiet window with no NMI traffic would wait forever.
+; exits through the GP stop path (part 4), which drains the batch's
+; still-pending request once and then terminates. Without it, an unload
+; during a quiet window with no NMI traffic would wait forever; without
+; the drain, the pending request would cross the terminate restore and
+; kill the box exactly like a crossed compensation.
 ;
-; The pause count is a resend interval in instructions, not a timeout:
-; each batch reissues exactly one request.
+; The pause count is a watchdog resend interval in instructions, not a
+; timeout and not a duty-cycle knob: steady-state delivery aborts the
+; spin after D, so the 20k ceiling only bounds the delayed-delivery tail
+; and stop latency. Detection comes from the pre-issue dwell W in the
+; #GP stub (P = 1 - L/T); each batch still reissues exactly one request.
 ;
 ; --*/
 
-; Single compensating ICR write, shared by the foreign-NMI path.
-; Clobbers RAX only. Mode is read fresh so a (hypothetical) mode flap
-; between setup and delivery still does the right write.
+; AsmSingleSelfNmi: one synthetic self-NMI request (ICR low 0x40400).
+; Deliberate crosser -- see the NMI stub header. Clobbers RAX, RCX, RDX;
+; RBX is kept. Mode is read fresh so a (hypothetical) mode flap between
+; setup and delivery still does the right write.
 
 AsmSingleSelfNmi PROC
     cmp DWORD PTR [g_AsmApicMode], 1
@@ -191,12 +248,13 @@ PUBLIC AsmApicXapicCommitted
 PUBLIC AsmApicXapicEnd
 AsmApicWriteXapic PROC
 @@issue:
+    lock inc QWORD PTR [g_AsmIssueSeq]
     mov rax, [g_AsmXapicIcrHigh]
     mov DWORD PTR [rax], 0
     mov rax, [g_AsmXapicIcrLow]
     mov DWORD PTR [rax], 40400h
 AsmApicXapicCommitted::
-    mov ecx, 100000
+    mov ecx, 20000
 @@spin:
     pause
     dec ecx
@@ -219,12 +277,13 @@ PUBLIC AsmApicX2apicCommitted
 PUBLIC AsmApicX2apicEnd
 AsmApicWriteX2apic PROC
 @@issue:
+    lock inc QWORD PTR [g_AsmIssueSeq]
     mov ecx, 830h
     xor edx, edx
     mov eax, 40400h
     wrmsr
 AsmApicX2apicCommitted::
-    mov ecx, 100000
+    mov ecx, 20000
 @@spin:
     pause
     dec ecx
@@ -263,12 +322,13 @@ AsmApicWriteX2apic ENDP
 ; and RAX for stack arguments, both caller-saved on its stack. RBX is
 ; callee-saved, so it survives the call. Every operand is evaluated
 ; after the stack switch, so memory operands must hang off RBX (or
-; RIP/.data), never off RSP.
+; RIP/.data), never off RSP. The sub keeps 16-byte pre-call alignment
+; (32 B shadow + 24 B stack args = 56, rounded to 40h) per the x64 ABI.
 
 DO_RECORD MACRO _buf, _evt, _vec, _rip, _rspv, _cr8v, _detail
     mov r11, rsp
     and rsp, 0FFFFFFFFFFFFFFF0h
-    sub rsp, 48h
+    sub rsp, 40h
     mov rcx, _buf
     mov edx, _evt
     mov r8d, _vec
@@ -280,6 +340,32 @@ DO_RECORD MACRO _buf, _evt, _vec, _rip, _rspv, _cr8v, _detail
     mov rax, _detail
     mov [rsp+30h], rax
     call AsmRecordEvent
+    mov rsp, r11
+ENDM
+
+; METRIC_RECORD: one per-delivery metric append. Same caller contract
+; as DO_RECORD (pushed regs + RBX frame anchor); memory operands hang
+; off RBX only. Base flags are an immediate; the x2APIC mode bit (20h)
+; is ORed in from a fresh mode read. NULL buffer skips the call.
+; Clobbers RAX, RCX, RDX, R8, R9, R10, R11; RBX survives (callee-saved).
+
+METRIC_RECORD MACRO _flagsimm
+    LOCAL _skip, _nomode
+    mov r11, rsp
+    and rsp, 0FFFFFFFFFFFFFFF0h
+    sub rsp, 20h
+    mov rcx, [g_AsmMetricBuffer]
+    test rcx, rcx
+    jz _skip
+    mov rdx, [rbx]
+    mov r8, [rbx+24]
+    mov r9d, _flagsimm
+    cmp DWORD PTR [g_AsmApicMode], 1
+    jne _nomode
+    or r9d, 20h
+_nomode:
+    call AsmMetricRecord
+_skip:
     mov rsp, r11
 ENDM
 
@@ -312,6 +398,12 @@ AsmRestoreNatives ENDP
 ; restored the natives. Records the stop, then terminates the thread on
 ; its clean entry stack: native IDT, CR8 passive, ordinary kernel code
 ; again, so the call is an ordinary call. Never returns.
+;
+; NMI-block note: when entered from the NMI teardown the CPU is still
+; NMI-blocked, and this path never executes IRET. That heals itself:
+; the block is cleared by the next IRET on the CPU, of which normal
+; interrupt traffic produces a steady stream -- no explicit unblock
+; exists or is needed.
 
 AsmTerminateSelf PROC
     mov rax, cr8
@@ -330,21 +422,56 @@ AsmTerminateSelf PROC
     int 3
 AsmTerminateSelf ENDP
 
-; AsmNmiStub: vector 2. Two paths:
+; AsmNmiStub: vector 2. Four paths, one shared teardown.
+;
+; Classification is immediate at entry (no hold -- see below) on RIP
+; plus the stash flag, tested against the UNION of both modes'
+; intervals so a hypothetical mode flap cannot misclassify:
+;
+;   stash == 0                     -> transparent (pre-first-stash)
+;   RIP in either [Committed, End) -> ours (consume, no synthetic)
+;   RIP in a prologue drop interval -> expected drop (consume, no
+;      synthetic): [AsmGpStub, AsmDwellStart) or [Write*, Committed).
+;      ICR-committed is not latch-armed -- a fresh request spends an
+;      acceptance gap (DS busy, latch empty) in flight while the cycle
+;      advances -- so a post-stash pre-Committed arrival may be our own
+;      stale compensation, and FP=0 forbids answering it. Bounded FN
+;      preferred over any FP.
+;   otherwise (dwell, gadget, dispatch bytes, above End) -> foreign.
+;
+; Foreign means the delivery is someone else's -- on the target, an
+; ICR-sent NMI from Windows or an anti-cheat, sourceless by
+; construction exactly like our own. The stub records it (NmiEntry
+; plus UnexpectedFault/vector 2 Detail 0, so the window can be judged
+; offline; the drop path logs Detail 1 instead) and answers with
+; exactly one synthetic self-NMI. Every path also emits one metric
+; record (flags carry the class); a NULL metric buffer skips it.
+;
+; The synthetic is a deliberate crosser and the ONLY crosser the design
+; allows. It is issued here and consumed natively right after the
+; teardown's restore+iretq (it cannot age past the entry sliver: a
+; latched NMI is recognized at the first post-iretq boundary, while the
+; IDT is still native). There a registered, expecting NMI callback --
+; which is what the sender paired it with -- claims it, timing intact
+; to microseconds, indistinguishable from the original to any checker
+; the protocol could run (an NMI carries no token to bind). If nothing
+; claims it, Windows bugchecks NMI_HARDWARE_FAILURE; that outcome
+; proves an unclaimed foreign arrived, diagnosable from the dumped
+; buffer, and is the accepted cost of the reinjection requirement.
+;
+; Everything else enforces the other half: loop issues never cross.
+; The teardown below issues nothing (the latch just emptied on entry),
+; the transparent path never restores, and the GP stop path drains
+; rather than terminates over a pending request. So any sourceless NMI
+; the native handler ever sees is exactly one deliberate answer to a
+; consumed foreign -- never a leaked loop issue.
 ;
 ; Transparent (no entry RSP stashed yet): the #GP stub has not run, so
-; this NMI landed in the first instructions of the first cycle and no
-; request of ours could have completed: it is foreign. Issue one
-; compensating request and IRETQ back to the interrupted context
-; unchanged. Execution continues into the #GP stub, which stashes and
-; enters the window; the compensation arrives later via the native IDT.
-;
-; Teardown (stashed): decide expected vs foreign by RIP interval. In
-; the window the delivery is consumed as our own request; outside it a
-; single compensating ICR write covers the consumed foreign NMI (with
-; the documented coalescing bound). Then restore the natives and IRETQ
-; directly back into the gadget: RIP = routine, RCX = block,
-; RSP = stashed entry RSP. The interrupted context is abandoned.
+; this NMI landed in the first instructions of the first cycle. One
+; synthetic, then IRETQ back to the interrupted context unchanged: no
+; restore (the custom IDT must stay loaded -- execution continues into
+; the #GP stub). The synthetic is consumed under the custom IDT as the
+; prologue completes, so this path can never reach native.
 
 PUBLIC AsmNmiStub
 AsmNmiStub PROC
@@ -359,32 +486,81 @@ AsmNmiStub PROC
     mov rbx, rsp
     add rbx, 64                    ; RBX -> NMI frame (RIP)
     mov rax, cr8
-    ; Record entry. Detail is the interrupted RCX (pushed value).
+    ; Record entry. Detail is the interrupted RCX (pushed value at
+    ; [RBX-16] given the 8-register push order above).
     mov rcx, [g_AsmEventBuffer]
     test rcx, rcx
     jz @@norec1
-    DO_RECORD rcx, 8, 2, QWORD PTR [rbx], QWORD PTR [rbx+24], rax, QWORD PTR [rbx-56]
+    DO_RECORD rcx, 8, 2, QWORD PTR [rbx], QWORD PTR [rbx+24], rax, QWORD PTR [rbx-16]
 @@norec1:
     cmp QWORD PTR [g_AsmEntryRsp], 0
     je @@transparent
-    ; Interval check on the interrupted RIP.
+    ; Union interval check on the interrupted RIP (mode-flap immune).
     mov r10, [rbx]
-    cmp DWORD PTR [g_AsmApicMode], 1
-    je @@x2
     lea rax, [AsmApicXapicCommitted]
     lea rcx, [AsmApicXapicEnd]
-    jmp @@cmp
-@@x2:
+    cmp r10, rax
+    jb @@tryx2
+    cmp r10, rcx
+    jb @@ours
+@@tryx2:
     lea rax, [AsmApicX2apicCommitted]
     lea rcx, [AsmApicX2apicEnd]
-@@cmp:
+    cmp r10, rax
+    jb @@notwindow
+    cmp r10, rcx
+    jb @@ours
+@@notwindow:
+    ; Prologue drop 1: [AsmGpStub, AsmDwellStart). Below the stub is
+    ; the gadget or elsewhere -> foreign (safe: latch empty there).
+    lea rax, [AsmGpStub]
+    lea rcx, [AsmDwellStart]
     cmp r10, rax
     jb @@foreign
     cmp r10, rcx
-    jae @@foreign
+    jb @@expected_drop
+    ; Dwell range [AsmDwellStart, AsmDwellEnd) -> foreign (the TP path
+    ; the dwell buys: latch provably empty, no issue yet this cycle).
+    lea rax, [AsmDwellStart]
+    lea rcx, [AsmDwellEnd]
+    cmp r10, rax
+    jb @@foreign
+    cmp r10, rcx
+    jb @@foreign_dwell
+    ; Prologue drop 2: [WriteXapic, XapicCommitted) -- dispatch bytes
+    ; between DwellEnd and the loop fall through to foreign (post-dwell
+    ; safe), only the 3-insn issue prologue drops.
+    lea rax, [AsmApicWriteXapic]
+    lea rcx, [AsmApicXapicCommitted]
+    cmp r10, rax
+    jb @@checkx2drop
+    cmp r10, rcx
+    jb @@expected_drop
+@@checkx2drop:
+    lea rax, [AsmApicWriteX2apic]
+    lea rcx, [AsmApicX2apicCommitted]
+    cmp r10, rax
+    jb @@foreign
+    cmp r10, rcx
+    jb @@expected_drop
+    jmp @@foreign
+@@ours:
+    METRIC_RECORD 003h                 ; STASH_UP | IN_WINDOW
+    jmp @@teardown
+@@expected_drop:
+    ; Stale-compensation suspect: consume silently (bounded FN, FP=0).
+    ; Legacy marker Detail 1 distinguishes this from foreign Detail 0.
+    mov rax, cr8
+    mov rcx, [g_AsmEventBuffer]
+    test rcx, rcx
+    jz @@dropmetric
+    DO_RECORD rcx, 12, 2, QWORD PTR [rbx], QWORD PTR [rbx+24], rax, 1
+@@dropmetric:
+    METRIC_RECORD 009h                 ; STASH_UP | IN_DROP
     jmp @@teardown
 @@transparent:
-    call AsmSingleSelfNmi          ; clobbers rax, rcx, rdx; RBX kept
+    METRIC_RECORD 050h                 ; TRANSPARENT | SYNTHETIC
+    call AsmSingleSelfNmi          ; deliberate crosser, custom-consumed
     pop rbx
     pop r11
     pop r10
@@ -394,11 +570,34 @@ AsmNmiStub PROC
     pop rcx
     pop rax
     iretq
+@@foreign_dwell:
+    mov rax, cr8
+    mov rcx, [g_AsmEventBuffer]
+    test rcx, rcx
+    jz @@dwellmetric
+    DO_RECORD rcx, 12, 2, QWORD PTR [rbx], QWORD PTR [rbx+24], rax, 0
+@@dwellmetric:
+    METRIC_RECORD 095h                 ; STASH | IN_DWELL | FOREIGN | SYNTH
+    jmp @@compensate
 @@foreign:
-    ; Outside the marker window with the protocol up: this delivery is
-    ; not our own request, so it is foreign and now consumed. One
-    ; compensating request keeps Windows whole, within the documented
-    ; coalescing bound.
+    ; Outside the marker windows with the protocol up and outside the
+    ; prologue drops: genuinely foreign (no request of ours can be
+    ; outstanding here -- see the header). Record it as the unexpected
+    ; vector-2 delivery it is; the NmiEntry record above already carries
+    ; the interrupted RIP, so the window can be judged offline. Then
+    ; answer with one synthetic self-NMI: the deliberate crosser. It is
+    ; consumed natively right after the shared teardown's restore+iretq,
+    ; where the sender's expecting NMI callback claims it -- or nothing
+    ; does, which is NMI_HARDWARE_FAILURE by Windows' rules and proves
+    ; an unclaimed foreign.
+    mov rax, cr8
+    mov rcx, [g_AsmEventBuffer]
+    test rcx, rcx
+    jz @@foreignmetric
+    DO_RECORD rcx, 12, 2, QWORD PTR [rbx], QWORD PTR [rbx+24], rax, 0
+@@foreignmetric:
+    METRIC_RECORD 091h                 ; STASH | FOREIGN | SYNTHETIC
+@@compensate:
     call AsmSingleSelfNmi          ; clobbers rax, rcx, rdx; RBX kept
 @@teardown:
     call AsmRestoreNatives         ; clobbers rax only; RBX kept
@@ -462,6 +661,8 @@ AsmNmiStub ENDP
 ; --*/
 
 PUBLIC AsmGpStub
+PUBLIC AsmDwellStart
+PUBLIC AsmDwellEnd
 AsmGpStub PROC
     push rax
     push rcx
@@ -483,6 +684,13 @@ AsmGpStub PROC
     cmp QWORD PTR [g_AsmEntryRsp], 0
     jne @@repeat
     mov [g_AsmEntryRsp], rax
+    ; First stash: the protocol is up. Capture the up TSC once (the
+    ; metric denominator starts here; transparent is impossible after).
+    lfence
+    rdtsc
+    shl rdx, 32
+    or rax, rdx
+    mov [g_AsmUpTsc], rax
     jmp @@records
 @@repeat:
     mov rcx, [g_AsmEventBuffer]
@@ -514,9 +722,24 @@ AsmGpStub PROC
     mov rax, cr8
     DO_RECORD rcx, 7, 13, QWORD PTR [rbx+8], QWORD PTR [rbx+32], rax, r10
 @@norec2:
+    ; Disarmed dwell W: one custom-IDT spin per cycle with the latch
+    ; provably empty (previous delivery consumed, no issue yet). A
+    ; foreign NMI here lands below Committed outside the prologue drop
+    ; and is answered (TP); the spin extends T without extending L.
+    ; The stop-drain path bypasses this (it jumps straight to
+    ; Committed), so unload latency never pays W.
+    mov rcx, [g_AsmDwellIters]
+    test rcx, rcx
+    jz @@nodwell
+AsmDwellStart::
+    pause
+    dec rcx
+    jnz AsmDwellStart
+AsmDwellEnd::
+@@nodwell:
     ; Enter the resend window. The #GP frame stays beneath: the stop
-    ; path terminates from it. RBX survives the loops (they use RAX/RCX
-    ; only, and the entry RSP is already stashed above).
+    ; path terminates from it. RBX survives the loops and the dwell
+    ; (they use RAX/RCX only, and the entry RSP is already stashed).
     cmp DWORD PTR [g_AsmApicMode], 1
     je AsmApicWriteX2apic
     jmp AsmApicWriteXapic
@@ -531,7 +754,7 @@ AsmGpStub PROC
 @@bug:
     mov r11, rsp
     and rsp, 0FFFFFFFFFFFFFFF0h
-    sub rsp, 28h
+    sub rsp, 30h
     mov ecx, 0E2h
     mov edx, 13
     mov r8, [rbx+8]
@@ -542,13 +765,33 @@ AsmGpStub PROC
 AsmGpStub ENDP
 
 ; AsmGpTeardownStop: entered by JMP from the APIC_WRITE loops when the
-; stop flag is set. Same stack contract as the GP stub tail (pushes
-; still on the stack; RBX already served its purpose and is abandoned).
-; Restores the natives and terminates; the #GP frame beneath is simply
-; discarded with everything else.
+; stop flag is set. On bare metal the batch's request is normally still
+; latched here (its delivery would have vectored to a stub instead), so
+; terminating now could let it cross the restore and die sourcelessly
+; native. Drain first: the first stop observation jumps back into the
+; window with the custom IDT still loaded, and that delivery empties
+; the latch through the normal teardown. The second observation -- no
+; delivery interrupted the drain spin, which a latched NMI would
+; promptly have done on bare metal -- is a timeout heuristic, not an
+; architectural proof (no readable NMI-pending bit exists; a hypervisor
+; withholding NMI reinjection can defeat it, so the bare-metal-only
+; claim and WorkerStop's unbounded wait are the real guarantees), and
+; then terminates. g_AsmStopDrain is set once and never cleared: the
+; stop is monotonic and the thread dies on this path. RBX is abandoned
+; on the drain; the NMI stub builds its own frame anchor if the drain
+; delivers. Never restore/terminate over a suspected-pending latch:
+; on inconsistency prefer hanging the drain (diagnosable) over crossing
+; a sourceless NMI native.
 
 PUBLIC AsmGpTeardownStop
 AsmGpTeardownStop PROC
+    cmp DWORD PTR [g_AsmStopDrain], 0
+    jne @@terminate
+    mov DWORD PTR [g_AsmStopDrain], 1
+    cmp DWORD PTR [g_AsmApicMode], 1
+    je AsmApicX2apicCommitted
+    jmp AsmApicXapicCommitted
+@@terminate:
     call AsmRestoreNatives         ; clobbers RAX only; RBX still frames
     mov rcx, [g_AsmEventBuffer]
     test rcx, rcx
@@ -635,7 +878,7 @@ AsmDefaultCommon PROC
 @@bug:
     mov r11, rsp
     and rsp, 0FFFFFFFFFFFFFFF0h
-    sub rsp, 28h
+    sub rsp, 30h
     mov ecx, 0E2h
     mov edx, DWORD PTR [rbx]
     mov r8, [rbx+16]
@@ -669,7 +912,7 @@ AsmMcStub PROC
 @@bug:
     mov r11, rsp
     and rsp, 0FFFFFFFFFFFFFFF0h
-    sub rsp, 28h
+    sub rsp, 30h
     mov ecx, 9Ch
     mov rdx, [rbx]
     mov r8, 0

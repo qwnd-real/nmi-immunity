@@ -22,8 +22,10 @@ Abstract:
     Pinning makes the captured CR3/GDTR/IDTR valid for every cycle
     without refresh. Creation and pinning of the new thread race by a
     handful of creator instructions; the gadget's straight-line prefix
-    is benign on any CPU, and the thread is pinned before it can
-    complete a cycle anywhere else.
+    is benign on any CPU, and the thread is pinned (via the set call,
+    whose status is the validation) before it can complete a cycle
+    anywhere else. Every failure after creation stops the thread and
+    waits for its exit before releasing anything it vectors through.
 
 --*/
 

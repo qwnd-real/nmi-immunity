@@ -48,8 +48,7 @@ What the project achieves, precisely:
    transiently in trap context or setup, never as a preemptible thread.
 
 Notation: TPR = the 4-bit task priority in CR8 (0..15). IRQL names
-(`PASSIVE_LEVEL`, `HIGH_LEVEL` = 31) are the kernel's numbering, which is
-*not* what CR8 holds — see [the block](#the-register-block-rcx).
+(`PASSIVE_LEVEL`, `HIGH_LEVEL` = 15 on x64) are the kernel's numbering.
 
 ## The gadget
 
@@ -112,17 +111,16 @@ matter; the rest is carried so a debugger dump of RCX reads coherently.
 | `+0x50` | Gdtr | **native** Gdtr, verbatim |
 | `+0x60` | Idtr | custom IDT |
 | `+0x70` | Tr | `0x0000` — the faulting null selector |
-| `+0xA0` | Cr8 | **15** (TPR — see below) |
+| `+0xA0` | Cr8 | `HIGH_LEVEL` (= 15 on x64 — see below) |
 
-The Cr8 value is the one place the naive reading ("Cr8 MUST be
-HIGH_LEVEL") would crash the machine: CR8 implements bits 3:0 only, and
-loading anything with bits 63:4 set raises #GP — while `HIGH_LEVEL` as an
-IRQL constant is 31 (`0x1F`). A `mov cr8, 31` inside the gadget would fault
-with the *native* IDT still loaded. The block therefore carries
-`TABLES_CR8_BLOCK_ALL = 15`, the highest representable TPR, which masks
-every maskable vector — the entire intent, with no fault. The kernel's own
-save path stores `__readcr8()`, likewise a 0..15 TPR value, so 15 is also
-what a real "fully masked" block contains.
+The Cr8 value works because of an x64 coincidence worth stating once:
+`HIGH_LEVEL` is 15 here — the highest IRQL *and* the highest
+representable TPR. CR8 implements bits 3:0 only, so the gadget's
+`mov cr8, rax` is legal exactly because the value stays within 0..15,
+and 15 masks every maskable vector, which is the entire intent. (On x86
+`HIGH_LEVEL` is 31 and this block would not transfer as-is; the
+experiment is x64-only.) The kernel's own save path stores
+`__readcr8()`, likewise a 0..15 TPR value.
 
 ## Birth: a thread that lives in ntoskrnl
 
@@ -144,11 +142,14 @@ self-termination below).
 
 **Pinning.** The setup captures the executing CPU, so it runs pinned there
 (`KeSetSystemGroupAffinityThread`); the newborn is pinned to the same CPU
-with `ZwSetInformationThread(ThreadAffinityMask)`, and the mask is read
-back with `ZwQueryInformationThread` and compared — an unpinned thread
-fails load loudly instead of cycling on the wrong CPU. Pinning is
+with `ZwSetInformationThread(ThreadAffinityMask)`, whose status is the
+validation (the kernel checks the mask; there is deliberately no
+read-back — the query side doesn't implement the class). Pinning is
 currently group-0-only (the legacy mask cannot name another group); a
-first processor outside group 0 fails load with a message.
+first processor outside group 0 fails load with a message. Every failure
+after creation stops the thread and waits for its exit *before* freeing
+the IDT, block, or APIC window — freeing first would pull the tables out
+from under a live handler.
 
 **Proof.** The gadget is a straight line to the faulting `LTR`, so a
 healthy thread reaches the #GP stub within milliseconds. Start polls the
@@ -251,28 +252,46 @@ End:                              ; <-- interval end (pure marker)
 ```
 
 The NMI stub reads the interrupted RIP from its own trap frame and
-compares it against `[Committed, End)` of the active mode. Three paths:
+compares it against `[Committed, End)` of the active mode. The check is
+diagnostic — behavior no longer diverges, by necessity (see note).
+Three paths:
 
 - **Transparent** — no entry RSP stashed yet. The #GP stub has not run, so
   this NMI landed in the first instructions of the first cycle and no
-  request of ours could have completed: it is foreign. One compensating
-  ICR write, then `IRETQ` back to the interrupted context unchanged.
-  Execution continues into the #GP stub; the compensation arrives later
-  via the native IDT.
+  request of ours could have completed: it is foreign. One synthetic
+  self-NMI, then `IRETQ` back to the interrupted context unchanged (no
+  restore — the custom IDT must stay loaded). The synthetic is consumed
+  under the custom IDT as the prologue completes, so this path can never
+  reach native.
 - **Expected** — RIP inside the window. The delivery is consumed as our own
-  request. No reissue. Teardown and reentry.
-- **Foreign** — RIP outside the window with the protocol up. The delivery
-  cannot be our request, so it is foreign and now consumed. Exactly one
-  compensating ICR write keeps Windows whole, then teardown.
+  request. Shared teardown and reentry.
+- **Foreign** — RIP outside the window with the protocol up. Genuinely
+  foreign: post-stash, no request of ours can be outstanding outside the
+  loop, so this cannot be a misclassified self-NMI — on the target, an
+  ICR-sent NMI from Windows or an anti-cheat, sourceless by construction
+  exactly like our own. Recorded as the unexpected vector-2 delivery it
+  is (the `NmiEntry` sibling carries the interrupted RIP for offline
+  judging), then answered with exactly one synthetic self-NMI: the
+  design's only allowed crosser. It is consumed natively right after the
+  shared teardown's restore+`iretq` — it cannot age past the entry
+  sliver, a latched NMI is recognized at the first post-`iretq`
+  boundary while the IDT is still native — where the sender's expecting
+  NMI callback claims it, timing intact to microseconds and
+  indistinguishable from the original to any check the protocol could
+  run. If nothing claims it, Windows answers with
+  `NMI_HARDWARE_FAILURE`; that outcome proves an unclaimed foreign
+  arrived and is the accepted cost of the reinjection requirement.
 
 The honest table — what each delivery costs Windows:
 
 | Delivery | Windows receives |
 | --- | --- |
 | self-NMI, nothing foreign near | nothing (consumed; it was ours) |
-| foreign before our write | our later self-NMI (transparent path) + the compensation: whole |
-| foreign inside our window | possibly nothing — see below |
-| stop requested | the terminating thread is gone; any latched request still arrives natively |
+| foreign before our write | the synthetic, natively — claimed by the sender's callback, or bugcheck if unclaimed |
+| foreign inside our window | nothing (coalesced; see below) |
+| foreign in prologue/tail | the synthetic, natively — same claimed-or-crash contract |
+| level-latched hardware source | its own redelivery, natively, on top of the above |
+| stop requested | the terminating thread is gone; drains leave nothing pending |
 
 > [!NOTE]
 > The coalescing bound (deliberate, documented, not fixable): "NMI
@@ -281,11 +300,17 @@ The honest table — what each delivery costs Windows:
 > delivery, which the RIP test consumes as expected. If no second request
 > stayed latched, the foreign event never reaches Windows. The RIP window
 > identifies interrupted *code*, and no observation available inside the
-> handler identifies the *source* — an NMI carries none. What this buys is
-> a bounded reinjection rate (the window is a few instruction boundaries
-> wide; the loss case needs a foreign NMI inside exactly it), not a
-> guarantee. Experiments requiring exact foreign-NMI accounting cannot use
-> this scheme.
+> handler identifies the *source* — an NMI carries none.
+>
+> And the hard rule underneath it: the only crosser the design allows is
+> the deliberate synthetic answer to a consumed foreign. Loop issues
+> never cross — issues happen only at the loop top, every delivery is
+> consumed in a stub, and the stop paths drain rather than terminate
+> over a pending request. A loop issue crossing instead, sourceless and
+> unowned, is answered by Windows with `NMI_HARDWARE_FAILURE`; that is
+> how the first field crash read postmortem (a genuine foreign took the
+> then-unconditional compensate path), and the GP-stop drain exists so
+> unload can never reproduce it.
 
 ## Reentry: abandon, never resume
 
@@ -338,8 +363,10 @@ ltr 0 ........................ #GP(0), expected
   │               ▼                ▼                ▼
   │          transparent       expected          foreign
   │          (no stash)       (in window)     (out of window)
-  │          compensate +      consume,        compensate +
-  │          iret to ctx       teardown        teardown
+  │          synthetic +      consume,        synthetic +
+  │          iret to ctx      teardown        shared teardown
+  │          (custom-                         (crosses natively,
+  │           consumed)                        callback claims)
   │               │                │                │
   │               │                ▼                ▼
   │               │         restore natives, CR8 = 0

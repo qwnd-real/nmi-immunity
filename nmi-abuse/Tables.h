@@ -48,25 +48,19 @@ Abstract:
 #define TABLES_TR_FAULTING              0x0000
 
 //
-// The Cr8 value the block carries. This is a TPR value, not an IRQL:
-// CR8 implements bits 3:0 only, and loading anything with bits 63:4
-// set raises #GP. HIGH_LEVEL as an IRQL constant is 31 (0x1F), which
-// would fault inside the gadget while the native IDT is still loaded.
-// 15 is the highest representable TPR and masks every maskable vector,
-// which is the entire intent.
+// The Cr8 value the block carries is HIGH_LEVEL, which on x64 is 15:
+// the highest IRQL and simultaneously the highest representable TPR.
+// That coincidence is what makes the gadget's `mov cr8, rax` legal --
+// CR8 implements bits 3:0 only, so any value with bits 63:4 set would
+// raise #GP instead. (On x86 HIGH_LEVEL is 31 and this block would not
+// transfer as-is; the experiment is x64-only.)
 //
-
-#define TABLES_CR8_BLOCK_ALL            15ULL
 
 //
 // One IDT: 256 sixteen-byte gates, sixteen-byte aligned, resident.
 //
 
 #define TABLES_IDT_COUNT                256
-//
-// One IDT: 256 sixteen-byte gates, sixteen-byte aligned, resident.
-//
-
 #define TABLES_IDT_COUNT                256
 #define TABLES_IDT_BYTES                (TABLES_IDT_COUNT * 16)
 

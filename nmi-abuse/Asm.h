@@ -74,6 +74,33 @@ AsmDefaultThunkAddress(
 );
 
 //
+// Marker addresses for offline classification and debugging. The NMI
+// stub compares RIP against these labels directly (union of both APIC
+// modes, so a hypothetical mode flap cannot misclassify); C++ never
+// dispatches on them.
+//
+
+ULONG64
+AsmDwellStartAddress(
+    VOID
+);
+
+ULONG64
+AsmDwellEndAddress(
+    VOID
+);
+
+ULONG64
+AsmApicWriteXapicAddress(
+    VOID
+);
+
+ULONG64
+AsmApicWriteX2apicAddress(
+    VOID
+);
+
+//
 // Assembly-owned shared state, filled by the worker before thread
 // creation (except EntryRsp and CycleCount, which the stubs own). The
 // ICR addresses come from the APIC module; the descriptor fields and
@@ -96,6 +123,11 @@ extern ULONG64 g_AsmBlock;
 extern ULONG64 g_AsmRoutine;
 extern ULONG64 g_AsmEntryRsp;
 extern ULONG64 g_AsmCycleCount;
+extern ULONG g_AsmStopDrain;
+extern ULONG64 g_AsmDwellIters;
+extern ULONG64 g_AsmIssueSeq;
+extern ULONG64 g_AsmUpTsc;
+extern ULONG64 g_AsmMetricBuffer;
 
 /*++
 
@@ -142,6 +174,21 @@ AsmRecordEvent(
     _In_ ULONG64 Rsp,
     _In_ ULONG64 Cr8,
     _In_ ULONG64 Detail
+);
+
+//
+// Unmangled per-delivery metric forwarder, implemented in Trace.cpp
+// over KmMetricRecord. The NMI stub calls this once per delivery with
+// the already-classified Flags; C++ code uses KmMetricRecord.
+//
+
+_IRQL_requires_max_(HIGH_LEVEL)
+VOID
+AsmMetricRecord(
+    _In_opt_ PVOID Buffer,
+    _In_ ULONG64 Rip,
+    _In_ ULONG64 Rsp,
+    _In_ ULONG Flags
 );
 
 EXTERN_C_END
